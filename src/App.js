@@ -2,8 +2,8 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import SendbirdChat from "@sendbird/chat";
 import { GroupChannelModule, GroupChannelHandler } from "@sendbird/chat/groupChannel";
 
-const APP_ID = "29927151-8F8F-4F44-9145-5EFA5355D486";
-const BOT_ID = "support_bot";
+const APP_ID = process.env.REACT_APP_SENDBIRD_APP_ID;
+const BOT_ID = process.env.REACT_APP_BOT_ID || "support_bot";
 
 function App() {
   const [userId, setUserId] = useState("");
@@ -107,36 +107,6 @@ function App() {
         loadChannels(sb);
       };
 
-      // ✅ Poll for new channels AND new messages every 5s
-      const pollInterval = setInterval(async () => {
-        try {
-          // Refresh channel list to pick up new Desk channels
-          await loadChannels(sb);
-
-          // Poll messages for currently selected channel
-          const current = selectedChannelRef.current;
-          if (!current) return;
-
-          const fresh = await sb.groupChannel.getChannel(current.url);
-          const latest = await fresh.getMessagesByTimestamp(Date.now(), {
-            prevResultSize: 10,
-            nextResultSize: 0,
-            isInclusive: true,
-          });
-          setMessages(prev => {
-            const existingIds = new Set(prev.map(m => m.messageId));
-            const newMsgs = latest.filter(m => !existingIds.has(m.messageId));
-            if (newMsgs.length === 0) return prev;
-            console.log("🔄 Polled new messages:", newMsgs.length);
-            return [...prev, ...newMsgs];
-          });
-        } catch (e) {
-          console.error("Poll error:", e.message);
-        }
-      }, 3000); // ✅ Reduced to 3s for faster delivery
-
-      sbRef.current._pollInterval = pollInterval;
-
       handler.onTypingStatusUpdated = (channel) => {
         if (selectedChannelRef.current?.url === channel.url) {
           const typers = channel.getTypingUsers();
@@ -160,9 +130,6 @@ function App() {
   // =========================
   const logout = async () => {
     if (sbRef.current) {
-      if (sbRef.current._pollInterval) {
-        clearInterval(sbRef.current._pollInterval); // ✅ Clear polling on logout
-      }
       sbRef.current.groupChannel.removeGroupChannelHandler("GLOBAL_HANDLER");
       await sbRef.current.disconnect();
     }
