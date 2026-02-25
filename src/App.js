@@ -39,7 +39,8 @@ function App() {
     } else {
       setIsAutoLogging(false);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // =========================
   // LOGIN
