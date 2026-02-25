@@ -89,10 +89,12 @@ function App() {
         loadChannels(sb);
       };
 
-      // ✅ Listen for new channels created after login (e.g. Desk channels)
-      handler.onUserReceivedInvitation = (channel) => {
-        console.log("📨 Invited to new channel:", channel.url);
-        loadChannels(sb);
+      // ✅ Detect when current user is added to a new channel (e.g. Desk channels via Platform API)
+      handler.onUserJoined = (channel, user) => {
+        if (user.userId === id) {
+          console.log("📨 Added to new channel:", channel.url);
+          loadChannels(sb);
+        }
       };
 
       // ✅ Listen for channel updates
@@ -164,6 +166,7 @@ function App() {
       await sbRef.current.disconnect();
     }
     localStorage.removeItem("sb_user_id");
+    localStorage.removeItem("sb_selected_channel");
     setIsLoggedIn(false);
     setUserId("");
     setInputUserId("");
@@ -425,11 +428,13 @@ function App() {
                   {unread > 0 && (
                     <span style={styles.unreadBadge}>{unread}</span>
                   )}
-                  <span
-                    style={styles.deleteIcon}
-                    onClick={(e) => deleteChannel(e, ch)}
-                    title="Delete ticket"
-                  >🗑</span>
+                  {!ch.url?.startsWith("sendbird_desk_") && (
+                    <span
+                      style={styles.deleteIcon}
+                      onClick={(e) => deleteChannel(e, ch)}
+                      title="Delete ticket"
+                    >🗑</span>
+                  )}
                 </div>
               </div>
             );
