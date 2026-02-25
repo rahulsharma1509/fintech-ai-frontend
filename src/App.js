@@ -4,6 +4,7 @@ import { GroupChannelModule, GroupChannelHandler } from "@sendbird/chat/groupCha
 
 const APP_ID = process.env.REACT_APP_SENDBIRD_APP_ID;
 const BOT_ID = process.env.REACT_APP_BOT_ID || "support_bot";
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 function App() {
   const [userId, setUserId] = useState("");
@@ -19,6 +20,7 @@ function App() {
   const [typingUsers, setTypingUsers] = useState([]);
   const [unreadMap, setUnreadMap] = useState({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [loginError, setLoginError] = useState("");
 
   const sbRef = useRef(null);
   const selectedChannelRef = useRef(null);
@@ -52,7 +54,26 @@ function App() {
 
   const loginWithId = async (id) => {
     setIsConnecting(true);
+    setLoginError("");
     try {
+      // Enforce 20-user hard limit via backend
+      if (BACKEND_URL) {
+        try {
+          const res = await fetch(`${BACKEND_URL}/register-user`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId: id }),
+          });
+          if (!res.ok) {
+            const data = await res.json();
+            setLoginError(data.message || "Access denied. Please contact support.");
+            return;
+          }
+        } catch (err) {
+          console.warn("User limit check unavailable, proceeding:", err.message);
+        }
+      }
+
       const sb = SendbirdChat.init({
         appId: APP_ID,
         modules: [new GroupChannelModule()],
@@ -308,13 +329,18 @@ function App() {
           <input
             placeholder="Enter your user ID"
             value={inputUserId}
-            onChange={(e) => setInputUserId(e.target.value)}
+            onChange={(e) => { setInputUserId(e.target.value); setLoginError(""); }}
             onKeyDown={(e) => e.key === "Enter" && login()}
             style={styles.loginInput}
           />
           <button onClick={login} style={styles.loginButton} disabled={isConnecting}>
             {isConnecting ? "Connecting..." : "Sign In"}
           </button>
+          {loginError && (
+            <div style={{ marginTop: "12px", padding: "10px 14px", background: "#fff0f0", border: "1px solid #f5c6cb", borderRadius: "8px", color: "#c0392b", fontSize: "13px", textAlign: "left" }}>
+              {loginError}
+            </div>
+          )}
         </div>
       </div>
     );
