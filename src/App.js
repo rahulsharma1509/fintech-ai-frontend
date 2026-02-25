@@ -39,7 +39,7 @@ function App() {
     } else {
       setIsAutoLogging(false);
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // =========================
   // LOGIN
@@ -110,7 +110,7 @@ function App() {
       const pollInterval = setInterval(async () => {
         try {
           // Refresh channel list to pick up new Desk channels
-          const updatedChannels = await loadChannels(sb);
+          await loadChannels(sb);
 
           // Poll messages for currently selected channel
           const current = selectedChannelRef.current;
