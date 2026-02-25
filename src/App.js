@@ -1,0 +1,573 @@
+import { useEffect, useState, useRef, useCallback } from "react";
+import SendbirdChat from "@sendbird/chat";
+import { GroupChannelModule, GroupChannelHandler } from "@sendbird/chat/groupChannel";
+
+const APP_ID = "29927151-8F8F-4F44-9145-5EFA5355D486";
+const BOT_ID = "support_bot";
+
+function App() {
+  const [userId, setUserId] = useState("");
+  const [inputUserId, setInputUserId] = useState("");
+  const [channels, setChannels] = useState([]);
+  const [selectedChannel, setSelectedChannel] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [isAutoLogging, setIsAutoLogging] = useState(true);
+  const [isSending, setIsSending] = useState(false);
+  const [typingUsers, setTypingUsers] = useState([]);
+  const [unreadMap, setUnreadMap] = useState({});
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const sbRef = useRef(null);
+  const selectedChannelRef = useRef(null);
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    selectedChannelRef.current = selectedChannel;
+  }, [selectedChannel]);
+
+  // =========================
+  // AUTO LOGIN ON REFRESH
+  // =========================
+  useEffect(() => {
+    const savedUserId = localStorage.getItem("sb_user_id");
+    if (savedUserId) {
+      setInputUserId(savedUserId);
+      loginWithId(savedUserId);
+    } else {
+      setIsAutoLogging(false);
+    }
+  }, []);
+
+  // =========================
+  // LOGIN
+  // =========================
+  const login = async () => {
+    if (!inputUserId.trim()) return;
+    await loginWithId(inputUserId);
+  };
+
+  const loginWithId = async (id) => {
+    setIsConnecting(true);
+    try {
+      const sb = SendbirdChat.init({
+        appId: APP_ID,
+        modules: [new GroupChannelModule()],
+      });
+
+      sbRef.current = sb;
+      await sb.connect(id);
+      localStorage.setItem("sb_user_id", id);
+      setUserId(id);
+      setIsLoggedIn(true);
+      const loadedChannels = await loadChannels(sb);
+
+      // ✅ Restore last selected channel after refresh
+      const savedChannelUrl = localStorage.getItem("sb_selected_channel");
+      if (savedChannelUrl && loadedChannels) {
+        const restored = loadedChannels.find(c => c.url === savedChannelUrl);
+        if (restored) await selectChannel(restored);
+      }
+
+      const handler = new GroupChannelHandler();
+      handler.onMessageReceived = (channel, message) => {
+        const current = selectedChannelRef.current;
+        if (current && channel.url === current.url) {
+          setMessages(prev => {
+            if (prev.some(m => m.messageId === message.messageId)) return prev;
+            return [...prev, message];
+          });
+          channel.markAsRead();
+        } else {
+          setUnreadMap(prev => ({
+            ...prev,
+            [channel.url]: (prev[channel.url] || 0) + 1
+          }));
+        }
+        loadChannels(sb);
+      };
+
+      // ✅ Listen for new channels created after login (e.g. Desk channels)
+      handler.onUserReceivedInvitation = (channel) => {
+        console.log("📨 Invited to new channel:", channel.url);
+        loadChannels(sb);
+      };
+
+      // ✅ Listen for channel updates
+      handler.onChannelChanged = (channel) => {
+        const current = selectedChannelRef.current;
+        if (current && channel.url === current.url) {
+          setSelectedChannel(channel);
+        }
+        loadChannels(sb);
+      };
+
+      // ✅ Poll for new channels AND new messages every 5s
+      const pollInterval = setInterval(async () => {
+        try {
+          // Refresh channel list to pick up new Desk channels
+          const updatedChannels = await loadChannels(sb);
+
+          // Poll messages for currently selected channel
+          const current = selectedChannelRef.current;
+          if (!current) return;
+
+          const fresh = await sb.groupChannel.getChannel(current.url);
+          const latest = await fresh.getMessagesByTimestamp(Date.now(), {
+            prevResultSize: 10,
+            nextResultSize: 0,
+            isInclusive: true,
+          });
+          setMessages(prev => {
+            const existingIds = new Set(prev.map(m => m.messageId));
+            const newMsgs = latest.filter(m => !existingIds.has(m.messageId));
+            if (newMsgs.length === 0) return prev;
+            console.log("🔄 Polled new messages:", newMsgs.length);
+            return [...prev, ...newMsgs];
+          });
+        } catch (e) {
+          console.error("Poll error:", e.message);
+        }
+      }, 3000); // ✅ Reduced to 3s for faster delivery
+
+      sbRef.current._pollInterval = pollInterval;
+
+      handler.onTypingStatusUpdated = (channel) => {
+        if (selectedChannelRef.current?.url === channel.url) {
+          const typers = channel.getTypingUsers();
+          setTypingUsers(typers.map(u => u.userId));
+        }
+      };
+
+      sb.groupChannel.addGroupChannelHandler("GLOBAL_HANDLER", handler);
+    } catch (err) {
+      console.error("Login failed:", err);
+      localStorage.removeItem("sb_user_id");
+    localStorage.removeItem("sb_selected_channel"); // ✅ Clear selected channel on logout
+    } finally {
+      setIsConnecting(false);
+      setIsAutoLogging(false);
+    }
+  };
+
+  // =========================
+  // LOGOUT
+  // =========================
+  const logout = async () => {
+    if (sbRef.current) {
+      if (sbRef.current._pollInterval) {
+        clearInterval(sbRef.current._pollInterval); // ✅ Clear polling on logout
+      }
+      sbRef.current.groupChannel.removeGroupChannelHandler("GLOBAL_HANDLER");
+      await sbRef.current.disconnect();
+    }
+    localStorage.removeItem("sb_user_id");
+    setIsLoggedIn(false);
+    setUserId("");
+    setInputUserId("");
+    setChannels([]);
+    setSelectedChannel(null);
+    setMessages([]);
+    setText("");
+    setUnreadMap({});
+  };
+
+  // =========================
+  // LOAD CHANNELS
+  // =========================
+  const loadChannels = async (sb) => {
+    const query = (sb || sbRef.current).groupChannel.createMyGroupChannelListQuery({
+      includeEmpty: true,
+      limit: 50, // ✅ Increased to include Desk channels
+      order: "latest_last_message",
+    });
+    const channelList = await query.next();
+    setChannels(channelList);
+    return channelList; // ✅ Return for use in auto-restore
+  };
+
+  // =========================
+  // CREATE NEW TICKET
+  // =========================
+  const createNewTicket = async () => {
+    const ch = await sbRef.current.groupChannel.createChannel({
+      invitedUserIds: [BOT_ID],
+      name: "New Support Ticket",
+      isDistinct: false,
+    });
+    setChannels(prev => [ch, ...prev]);
+    selectChannel(ch);
+  };
+
+  // =========================
+  // SELECT CHANNEL
+  // =========================
+  const selectChannel = async (channel) => {
+    setSelectedChannel(channel);
+    localStorage.setItem("sb_selected_channel", channel.url); // ✅ Persist selected channel
+    setTypingUsers([]);
+    setUnreadMap(prev => ({ ...prev, [channel.url]: 0 }));
+    channel.markAsRead();
+    const history = await channel.getMessagesByTimestamp(Date.now(), {
+      prevResultSize: 50,
+      nextResultSize: 0,
+      isInclusive: true,
+    });
+    setMessages(history);
+  };
+
+  // =========================
+  // DELETE CHANNEL
+  // =========================
+  const deleteChannel = async (e, channel) => {
+    e.stopPropagation();
+    try {
+      await channel.delete();
+      setChannels(prev => prev.filter(c => c.url !== channel.url));
+      if (selectedChannel?.url === channel.url) {
+        setSelectedChannel(null);
+        setMessages([]);
+      }
+    } catch (err) {
+      console.error("Delete failed:", err);
+    }
+  };
+
+  // =========================
+  // SEND MESSAGE
+  // =========================
+  const sendMessage = useCallback(() => {
+    if (!text.trim() || !selectedChannel || isSending) return;
+    const messageText = text;
+    setText("");
+    setIsSending(true);
+
+    const request = selectedChannel.sendUserMessage({ message: messageText });
+
+    request.onSucceeded(async (message) => {
+      setMessages(prev => {
+        if (prev.some(m => m.messageId === message.messageId)) return prev;
+        return [...prev, message];
+      });
+      setIsSending(false);
+
+      if (!selectedChannel.name || selectedChannel.name === "New Support Ticket") {
+        const newTitle = messageText.length > 30
+          ? messageText.substring(0, 30) + "..."
+          : messageText;
+        await selectedChannel.updateChannel({ name: newTitle });
+        loadChannels();
+      }
+    });
+
+    request.onFailed((error) => {
+      console.error("Send failed:", error);
+      setIsSending(false);
+    });
+  }, [text, selectedChannel, isSending]);
+
+  // =========================
+  // TYPING INDICATOR
+  // =========================
+  const handleTyping = (e) => {
+    setText(e.target.value);
+    if (selectedChannel) selectedChannel.startTyping();
+  };
+
+  // =========================
+  // AUTO SCROLL
+  // =========================
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // =========================
+  // FILTER CHANNELS
+  // =========================
+  const filteredChannels = channels.filter(ch =>
+    (ch.name || "Support Ticket").toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  // =========================
+  // GET STATUS BADGE
+  // =========================
+  const getStatusBadge = (msg) => {
+    if (!msg) return null;
+    const lower = msg.toLowerCase();
+    if (lower.includes("failed") || lower.includes("escalating")) return { label: "Escalated", color: "#e74c3c" };
+    if (lower.includes("success")) return { label: "Resolved", color: "#27ae60" };
+    if (lower.includes("pending")) return { label: "Pending", color: "#f39c12" };
+    return null;
+  };
+
+  // =========================
+  // FORMAT TIME
+  // =========================
+  const formatTime = (ts) => {
+    if (!ts) return "";
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  // =========================
+  // RECONNECTING SCREEN
+  // =========================
+  if (isAutoLogging) {
+    return (
+      <div style={styles.loginWrapper}>
+        <div style={{ textAlign: "center", color: "#fff" }}>
+          <div style={{ fontSize: "40px", marginBottom: "16px" }}>💼</div>
+          <div style={{ fontSize: "16px" }}>Reconnecting...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================
+  // LOGIN SCREEN
+  // =========================
+  if (!isLoggedIn) {
+    return (
+      <div style={styles.loginWrapper}>
+        <div style={styles.loginCard}>
+          <div style={styles.logo}>💼</div>
+          <h2 style={{ margin: "0 0 6px", fontSize: "22px" }}>Support Portal</h2>
+          <p style={{ color: "#888", margin: "0 0 24px", fontSize: "14px" }}>Sign in to manage your support tickets</p>
+          <input
+            placeholder="Enter your user ID"
+            value={inputUserId}
+            onChange={(e) => setInputUserId(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && login()}
+            style={styles.loginInput}
+          />
+          <button onClick={login} style={styles.loginButton} disabled={isConnecting}>
+            {isConnecting ? "Connecting..." : "Sign In"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================
+  // MAIN UI
+  // =========================
+  return (
+    <div style={styles.container}>
+      {/* SIDEBAR */}
+      <div style={styles.sidebar}>
+        <div style={styles.userInfo}>
+          <div style={styles.avatar}>{userId[0]?.toUpperCase()}</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: "600", fontSize: "14px" }}>{userId}</div>
+            <div style={{ fontSize: "11px", color: "#27ae60" }}>● Online</div>
+          </div>
+          <button onClick={logout} style={styles.logoutBtn} title="Logout">↩</button>
+        </div>
+
+        <div style={styles.searchWrapper}>
+          <input
+            placeholder="🔍 Search tickets..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={styles.searchInput}
+          />
+        </div>
+
+        <button onClick={createNewTicket} style={styles.newButton}>
+          + New Support Ticket
+        </button>
+
+        <div style={styles.channelList}>
+          {filteredChannels.length === 0 && (
+            <div style={{ padding: "20px", textAlign: "center", color: "#aaa", fontSize: "13px" }}>
+              No tickets found
+            </div>
+          )}
+          {filteredChannels.map((ch) => {
+            const isSelected = selectedChannel?.url === ch.url;
+            const unread = unreadMap[ch.url] || 0;
+            const lastMsg = ch.lastMessage?.message || "";
+            const badge = getStatusBadge(lastMsg);
+
+            return (
+              <div
+                key={ch.url}
+                onClick={() => selectChannel(ch)}
+                style={{
+                  ...styles.channelItem,
+                  background: isSelected ? "#e8f0fe" : "transparent",
+                  borderLeft: isSelected ? "3px solid #1e2a38" : "3px solid transparent",
+                }}
+              >
+                <div style={styles.channelIcon}>🎫</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontWeight: unread ? "700" : "500", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {ch.name || "Support Ticket"}
+                    </span>
+                    <span style={{ fontSize: "10px", color: "#aaa", marginLeft: "4px", whiteSpace: "nowrap" }}>
+                      {formatTime(ch.lastMessage?.createdAt)}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+                    {badge && (
+                      <span style={{ fontSize: "9px", background: badge.color, color: "#fff", padding: "1px 5px", borderRadius: "4px" }}>
+                        {badge.label}
+                      </span>
+                    )}
+                    <span style={{ fontSize: "11px", color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {lastMsg.substring(0, 35)}{lastMsg.length > 35 ? "..." : ""}
+                    </span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", marginLeft: "4px" }}>
+                  {unread > 0 && (
+                    <span style={styles.unreadBadge}>{unread}</span>
+                  )}
+                  <span
+                    style={styles.deleteIcon}
+                    onClick={(e) => deleteChannel(e, ch)}
+                    title="Delete ticket"
+                  >🗑</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* CHAT WINDOW */}
+      <div style={styles.chatContainer}>
+        {!selectedChannel ? (
+          <div style={styles.emptyState}>
+            <div style={{ fontSize: "48px" }}>💬</div>
+            <h3>Select a ticket to start chatting</h3>
+            <p style={{ color: "#aaa", fontSize: "14px" }}>Or create a new support ticket</p>
+            <button onClick={createNewTicket} style={{ ...styles.loginButton, marginTop: "16px", width: "auto", padding: "10px 24px" }}>
+              + New Ticket
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={styles.chatHeader}>
+              <div style={styles.channelIcon}>🎫</div>
+              <div>
+                <div style={{ fontWeight: "600" }}>{selectedChannel.name || "Support Ticket"}</div>
+                <div style={{ fontSize: "11px", color: "#aaa" }}>{selectedChannel.memberCount} members</div>
+              </div>
+            </div>
+
+            <div style={styles.chatArea}>
+              {messages.map((msg) => {
+                if (!msg.message) return null;
+                const isUser = msg.sender?.userId === userId;
+                const isBot = msg.sender?.userId === BOT_ID;
+
+                return (
+                  <div
+                    key={msg.messageId}
+                    style={{
+                      display: "flex",
+                      justifyContent: isUser ? "flex-end" : "flex-start",
+                      marginBottom: "12px",
+                      alignItems: "flex-end",
+                      gap: "8px",
+                    }}
+                  >
+                    {!isUser && (
+                      <div style={{ ...styles.avatar, width: "28px", height: "28px", fontSize: "12px", flexShrink: 0 }}>
+                        {isBot ? "🤖" : msg.sender?.userId?.[0]?.toUpperCase()}
+                      </div>
+                    )}
+                    <div style={{ maxWidth: "65%" }}>
+                      {!isUser && (
+                        <div style={{ fontSize: "10px", color: "#aaa", marginBottom: "3px", paddingLeft: "4px" }}>
+                          {isBot ? "Support Bot" : msg.sender?.userId}
+                        </div>
+                      )}
+                      <div style={{
+                        background: isUser ? "#1e2a38" : isBot ? "#f0f4ff" : "#e9eef3",
+                        color: isUser ? "#fff" : "#000",
+                        padding: "10px 14px",
+                        borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                        fontSize: "14px",
+                        lineHeight: "1.4",
+                        border: isBot ? "1px solid #d0dcff" : "none",
+                      }}>
+                        {msg.message}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "#bbb", marginTop: "3px", textAlign: isUser ? "right" : "left", paddingLeft: "4px" }}>
+                        {formatTime(msg.createdAt)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {typingUsers.length > 0 && (
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                  <div style={{ ...styles.avatar, width: "28px", height: "28px", fontSize: "12px" }}>🤖</div>
+                  <div style={{ background: "#f0f4ff", padding: "10px 14px", borderRadius: "18px 18px 18px 4px", border: "1px solid #d0dcff" }}>
+                    <span style={styles.typingDot} />
+                    <span style={{ ...styles.typingDot, animationDelay: "0.2s" }} />
+                    <span style={{ ...styles.typingDot, animationDelay: "0.4s" }} />
+                  </div>
+                </div>
+              )}
+              <div ref={bottomRef} />
+            </div>
+
+            <div style={styles.inputArea}>
+              <input
+                style={styles.messageInput}
+                value={text}
+                onChange={handleTyping}
+                placeholder="Type your message or transaction ID (e.g. TXN1001)..."
+                onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+              />
+              <button
+                style={{ ...styles.sendButton, opacity: isSending || !text.trim() ? 0.5 : 1 }}
+                onClick={sendMessage}
+                disabled={isSending || !text.trim()}
+              >
+                {isSending ? "..." : "➤"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  container: { display: "flex", height: "100vh", fontFamily: "'Inter', Arial, sans-serif", background: "#f4f6f8" },
+  sidebar: { width: "300px", borderRight: "1px solid #e0e4e8", display: "flex", flexDirection: "column", background: "#fff" },
+  userInfo: { display: "flex", alignItems: "center", gap: "10px", padding: "16px", borderBottom: "1px solid #f0f0f0" },
+  avatar: { width: "36px", height: "36px", borderRadius: "50%", background: "#1e2a38", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold", fontSize: "14px", flexShrink: 0 },
+  logoutBtn: { background: "none", border: "1px solid #ddd", borderRadius: "6px", padding: "4px 8px", cursor: "pointer", fontSize: "14px" },
+  searchWrapper: { padding: "10px 12px" },
+  searchInput: { width: "100%", padding: "8px 12px", borderRadius: "20px", border: "1px solid #e0e4e8", fontSize: "13px", background: "#f8f9fb", boxSizing: "border-box" },
+  newButton: { margin: "0 12px 10px", padding: "10px", borderRadius: "8px", border: "none", background: "#1e2a38", color: "#fff", cursor: "pointer", fontWeight: "600", fontSize: "13px" },
+  channelList: { flex: 1, overflowY: "auto" },
+  channelItem: { display: "flex", alignItems: "center", padding: "10px 12px", cursor: "pointer", gap: "8px", transition: "background 0.15s" },
+  channelIcon: { fontSize: "16px", flexShrink: 0 },
+  unreadBadge: { background: "#e74c3c", color: "#fff", borderRadius: "10px", padding: "1px 6px", fontSize: "10px", fontWeight: "bold" },
+  deleteIcon: { cursor: "pointer", fontSize: "13px", opacity: 0.5 },
+  chatContainer: { flex: 1, display: "flex", flexDirection: "column" },
+  emptyState: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#555" },
+  chatHeader: { padding: "14px 20px", borderBottom: "1px solid #e0e4e8", display: "flex", alignItems: "center", gap: "10px", background: "#fff" },
+  chatArea: { flex: 1, padding: "20px", overflowY: "auto", background: "#f4f6f8" },
+  inputArea: { display: "flex", padding: "12px 16px", borderTop: "1px solid #e0e4e8", background: "#fff", gap: "8px", alignItems: "center" },
+  messageInput: { flex: 1, padding: "10px 16px", borderRadius: "24px", border: "1px solid #e0e4e8", fontSize: "14px", outline: "none" },
+  sendButton: { width: "40px", height: "40px", borderRadius: "50%", border: "none", background: "#1e2a38", color: "#fff", cursor: "pointer", fontSize: "16px", display: "flex", alignItems: "center", justifyContent: "center" },
+  typingDot: { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#888", margin: "0 2px", animation: "bounce 0.8s infinite" },
+  loginWrapper: { height: "100vh", display: "flex", justifyContent: "center", alignItems: "center", background: "linear-gradient(135deg, #1e2a38 0%, #2c3e50 100%)" },
+  loginCard: { width: "380px", padding: "48px 40px", background: "white", borderRadius: "16px", boxShadow: "0 20px 60px rgba(0,0,0,0.2)", textAlign: "center" },
+  logo: { fontSize: "40px", marginBottom: "16px" },
+  loginInput: { width: "100%", padding: "12px 16px", borderRadius: "8px", border: "1px solid #e0e4e8", fontSize: "14px", marginBottom: "16px", boxSizing: "border-box" },
+  loginButton: { width: "100%", padding: "12px", borderRadius: "8px", border: "none", background: "#1e2a38", color: "white", fontSize: "15px", fontWeight: "600", cursor: "pointer" },
+};
+
+export default App;
