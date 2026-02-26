@@ -333,18 +333,14 @@ function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channelUrl: selectedChannel?.url, userId }),
         });
-        if (res.ok && selectedChannel) {
-          // Reload real messages from Sendbird — replaces optimistic entries
-          const history = await selectedChannel.getMessagesByTimestamp(Date.now(), {
-            prevResultSize: 50, nextResultSize: 0, isInclusive: true,
-          });
-          setMessages(history);
-        } else {
+        if (!res.ok) {
           // Remove optimistic messages on failure and show error
           setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
           const data = await res.json().catch(() => ({}));
           alert(data.error || "Could not connect to an agent. Please try again.");
         }
+        // On success: keep optimistic messages visible; the real bot confirmation
+        // message arrives shortly via onMessageReceived and appends naturally.
       } catch (err) {
         console.error("Escalation failed:", err);
         setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
