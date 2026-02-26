@@ -21,6 +21,8 @@ function App() {
   const [unreadMap, setUnreadMap] = useState({});
   const [searchQuery, setSearchQuery] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [faqContent, setFaqContent] = useState(null);       // inline FAQ panel text
+  const [paymentNotice, setPaymentNotice] = useState(null); // { type, txnId } after Stripe redirect
 
   const sbRef = useRef(null);
   const selectedChannelRef = useRef(null);
@@ -42,6 +44,21 @@ function App() {
       setIsAutoLogging(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // =========================
+  // STRIPE REDIRECT DETECTION
+  // After Stripe redirects back, read ?payment=success|cancelled&txn=TXN1001
+  // from the URL, store it in state, then clean the URL bar.
+  // =========================
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const payment = params.get("payment");
+    const txn = params.get("txn");
+    if (payment && txn) {
+      setPaymentNotice({ type: payment, txnId: txn });
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, []);
 
   // =========================
@@ -197,6 +214,7 @@ function App() {
   // SELECT CHANNEL
   // =========================
   const selectChannel = async (channel) => {
+    setFaqContent(null);
     setSelectedChannel(channel);
     localStorage.setItem("sb_selected_channel", channel.url); // ✅ Persist selected channel
     setTypingUsers([]);
@@ -259,6 +277,66 @@ function App() {
       setIsSending(false);
     });
   }, [text, selectedChannel, isSending]);
+
+  // =========================
+  // ACTION BUTTON HANDLER
+  // Called when the user clicks one of the interactive buttons embedded in a
+  // bot message (Retry Payment / Talk to Human / View FAQ).
+  // =========================
+  const handleButtonAction = useCallback(async (action, meta = {}) => {
+    if (action === "retry_payment") {
+      if (!BACKEND_URL) {
+        alert("Backend URL not configured. Add REACT_APP_BACKEND_URL to your environment.");
+        return;
+      }
+      try {
+        const res = await fetch(`${BACKEND_URL}/retry-payment`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ txnId: meta.txnId, channelUrl: selectedChannel?.url, userId }),
+        });
+        const data = await res.json();
+        if (data.paymentUrl) window.open(data.paymentUrl, "_blank");
+      } catch (err) {
+        console.error("Retry payment failed:", err);
+      }
+
+    } else if (action === "escalate") {
+      // Send a natural-language message — the webhook detects "escalation" intent
+      // and creates a Desk ticket (or forwards to the existing one if already open).
+      if (selectedChannel) {
+        const req = selectedChannel.sendUserMessage({ message: "I want to speak to a human agent." });
+        req.onFailed((err) => console.error("Escalation message failed:", err));
+      }
+
+    } else if (action === "faq") {
+      // Query the KB for payment failure FAQ, then show the answer inline
+      // below the chat — no new Sendbird message needed.
+      if (!BACKEND_URL) {
+        setFaqContent(
+          "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues. Contact support for help."
+        );
+        return;
+      }
+      try {
+        const res = await fetch(`${BACKEND_URL}/knowledge-base`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: "payment failed" }),
+        });
+        const data = await res.json();
+        setFaqContent(
+          data.found
+            ? data.answer
+            : "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues. Contact support for further assistance."
+        );
+      } catch {
+        setFaqContent(
+          "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues."
+        );
+      }
+    }
+  }, [selectedChannel, userId]);
 
   // =========================
   // TYPING INDICATOR
@@ -457,6 +535,26 @@ function App() {
               </div>
             </div>
 
+            {/* Payment redirect notice — shown after Stripe redirects back */}
+            {paymentNotice && (
+              <div style={{
+                padding: "10px 16px",
+                background: paymentNotice.type === "success" ? "#e8f8e8" : "#fff8e8",
+                borderBottom: `1px solid ${paymentNotice.type === "success" ? "#a8dca8" : "#ffd08a"}`,
+                fontSize: "13px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}>
+                <span style={{ color: paymentNotice.type === "success" ? "#27ae60" : "#e67e22", fontWeight: "500" }}>
+                  {paymentNotice.type === "success"
+                    ? `Payment for ${paymentNotice.txnId} was successful!`
+                    : `Payment for ${paymentNotice.txnId} was cancelled. You can retry below.`}
+                </span>
+                <button onClick={() => setPaymentNotice(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>
+              </div>
+            )}
+
             <div style={styles.chatArea}>
               {messages.map((msg) => {
                 if (!msg.message) return null;
@@ -496,6 +594,25 @@ function App() {
                       }}>
                         {msg.message}
                       </div>
+                      {/* Action buttons — rendered only on bot messages that carry a data payload */}
+                      {isBot && (() => {
+                        let msgData = null;
+                        try { msgData = msg.data ? JSON.parse(msg.data) : null; } catch {}
+                        if (!msgData || msgData.type !== "action_buttons" || !msgData.buttons?.length) return null;
+                        return (
+                          <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
+                            {msgData.buttons.map((btn) => (
+                              <button
+                                key={btn.action}
+                                onClick={() => handleButtonAction(btn.action, { txnId: btn.txnId || msgData.txnId })}
+                                style={{ padding: "6px 14px", borderRadius: "16px", border: "1px solid #1e2a38", background: "#fff", color: "#1e2a38", fontSize: "12px", cursor: "pointer", fontWeight: "500" }}
+                              >
+                                {btn.label}
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
                       <div style={{ fontSize: "10px", color: "#bbb", marginTop: "3px", textAlign: isUser ? "right" : "left", paddingLeft: "4px" }}>
                         {formatTime(msg.createdAt)}
                       </div>
@@ -516,6 +633,17 @@ function App() {
               )}
               <div ref={bottomRef} />
             </div>
+
+            {/* Inline FAQ panel — shown when user clicks "View FAQ" button */}
+            {faqContent && (
+              <div style={{ padding: "12px 16px", background: "#f0f4ff", borderTop: "1px solid #d0dcff", fontSize: "13px", color: "#333" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "6px" }}>
+                  <strong style={{ fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "0.5px" }}>FAQ</strong>
+                  <button onClick={() => setFaqContent(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>
+                </div>
+                <div style={{ lineHeight: "1.6" }}>{faqContent}</div>
+              </div>
+            )}
 
             <div style={styles.inputArea}>
               <input
