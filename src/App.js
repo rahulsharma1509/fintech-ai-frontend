@@ -300,7 +300,12 @@ function App() {
         });
         const data = await res.json();
         if (data.paymentUrl) {
-          window.open(data.paymentUrl, "_blank");
+          // Try to open the payment page. If the browser's popup blocker prevents it,
+          // window.open returns null — fall back to showing a clickable link in an alert.
+          const opened = window.open(data.paymentUrl, "_blank");
+          if (!opened) {
+            alert(`Your browser blocked the payment page.\n\nPlease open this link manually:\n${data.paymentUrl}`);
+          }
         } else {
           alert(data.error || data.message || "Could not create payment link. Please try again.");
         }
@@ -334,13 +339,24 @@ function App() {
           body: JSON.stringify({ channelUrl: selectedChannel?.url, userId }),
         });
         if (!res.ok) {
-          // Remove optimistic messages on failure and show error
           setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
           const data = await res.json().catch(() => ({}));
           alert(data.error || "Could not connect to an agent. Please try again.");
+          return;
         }
-        // On success: keep optimistic messages visible; the real bot confirmation
-        // message arrives shortly via onMessageReceived and appends naturally.
+        // Poll for the real bot message — Sendbird may miss the real-time event
+        // if the connection dropped during the Render cold-start delay.
+        const ch = selectedChannel;
+        const pollAt = [3000, 7000, 15000];
+        pollAt.forEach(delay => {
+          setTimeout(async () => {
+            if (!ch) return;
+            const history = await ch.getMessagesByTimestamp(Date.now(), {
+              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+            });
+            setMessages(history);
+          }, delay);
+        });
       } catch (err) {
         console.error("Escalation failed:", err);
         setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
