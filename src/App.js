@@ -4,7 +4,7 @@ import { GroupChannelModule, GroupChannelHandler } from "@sendbird/chat/groupCha
 
 const APP_ID = process.env.REACT_APP_SENDBIRD_APP_ID;
 const BOT_ID = process.env.REACT_APP_BOT_ID || "support_bot";
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://fintech-ai-backend-r8ap.onrender.com";
+const BACKEND_URL = "https://fintech-ai-backend-r8ap.onrender.com";
 
 function App() {
   const [userId, setUserId] = useState("");
