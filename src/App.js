@@ -310,20 +310,44 @@ function App() {
       }
 
     } else if (action === "escalate") {
-      // Call /escalate directly — creates a Desk ticket immediately without
-      // relying on the webhook intent detection chain.
+      // Show optimistic messages immediately so the user gets instant feedback
+      // even if the backend takes a while to respond (e.g. Render cold start).
+      const nowMs = Date.now();
+      const optUser = {
+        messageId: `opt_${nowMs}`,
+        sender: { userId },
+        message: "I need to speak to a human agent.",
+        createdAt: nowMs,
+      };
+      const optBot = {
+        messageId: `opt_${nowMs + 1}`,
+        sender: { userId: BOT_ID },
+        message: "Connecting you with a human agent... please wait while we create your support ticket.",
+        createdAt: nowMs + 1,
+      };
+      setMessages(prev => [...prev, optUser, optBot]);
+
       try {
         const res = await fetch(`${BACKEND_URL}/escalate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channelUrl: selectedChannel?.url, userId }),
         });
-        if (!res.ok) {
+        if (res.ok && selectedChannel) {
+          // Reload real messages from Sendbird — replaces optimistic entries
+          const history = await selectedChannel.getMessagesByTimestamp(Date.now(), {
+            prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+          });
+          setMessages(history);
+        } else {
+          // Remove optimistic messages on failure and show error
+          setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
           const data = await res.json().catch(() => ({}));
           alert(data.error || "Could not connect to an agent. Please try again.");
         }
       } catch (err) {
         console.error("Escalation failed:", err);
+        setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
         alert("Could not reach support. Please try again.");
       }
 
