@@ -300,12 +300,9 @@ function App() {
         });
         const data = await res.json();
         if (data.paymentUrl) {
-          // Try to open the payment page. If the browser's popup blocker prevents it,
-          // window.open returns null — fall back to showing a clickable link in an alert.
-          const opened = window.open(data.paymentUrl, "_blank");
-          if (!opened) {
-            alert(`Your browser blocked the payment page.\n\nPlease open this link manually:\n${data.paymentUrl}`);
-          }
+          // Navigate in the same tab so Stripe can redirect straight back to
+          // the chat — no new tab means no Sendbird reconnect and no logout.
+          window.location.href = data.paymentUrl;
         } else {
           alert(data.error || data.message || "Could not create payment link. Please try again.");
         }
