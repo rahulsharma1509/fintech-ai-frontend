@@ -594,11 +594,15 @@ function App() {
                       }}>
                         {msg.message}
                       </div>
-                      {/* Action buttons — rendered only on bot messages that carry a data payload */}
-                      {isBot && (() => {
+                      {/* Action buttons — rendered for any incoming (non-user) message
+                          that carries a data payload with type:"action_buttons".
+                          Uses !isUser instead of isBot so agent messages with buttons
+                          also render correctly and BOT_ID mismatches can't silently break this. */}
+                      {!isUser && (() => {
+                        if (!msg.data) return null;
                         let msgData = null;
-                        try { msgData = msg.data ? JSON.parse(msg.data) : null; } catch {}
-                        if (!msgData || msgData.type !== "action_buttons" || !msgData.buttons?.length) return null;
+                        try { msgData = JSON.parse(msg.data); } catch { return null; }
+                        if (msgData?.type !== "action_buttons" || !msgData.buttons?.length) return null;
                         return (
                           <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
                             {msgData.buttons.map((btn) => (
