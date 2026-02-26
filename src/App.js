@@ -73,7 +73,9 @@ function App() {
     setIsConnecting(true);
     setLoginError("");
     try {
-      // Enforce 20-user hard limit via backend
+      // Enforce 20-user hard limit via backend.
+      // Only a deliberate 403 (limit reached) blocks login.
+      // 404 (old backend), 500, or network errors all let login proceed.
       if (BACKEND_URL) {
         try {
           const res = await fetch(`${BACKEND_URL}/register-user`, {
@@ -81,11 +83,16 @@ function App() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ userId: id }),
           });
-          if (!res.ok) {
-            const data = await res.json();
-            setLoginError(data.message || "Access denied. Please contact support.");
+          if (res.status === 403) {
+            try {
+              const data = await res.json();
+              setLoginError(data.message || "Access denied. Please contact support.");
+            } catch {
+              setLoginError("This app has reached its user limit. Please contact support.");
+            }
             return;
           }
+          // 200, 201, 404 (old backend), 500 → all proceed with login
         } catch (err) {
           console.warn("User limit check unavailable, proceeding:", err.message);
         }
