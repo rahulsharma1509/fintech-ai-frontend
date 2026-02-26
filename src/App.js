@@ -292,10 +292,6 @@ function App() {
   // =========================
   const handleButtonAction = useCallback(async (action, meta = {}) => {
     if (action === "retry_payment") {
-      if (!BACKEND_URL) {
-        alert("Backend URL not configured. Add REACT_APP_BACKEND_URL to your environment.");
-        return;
-      }
       try {
         const res = await fetch(`${BACKEND_URL}/retry-payment`, {
           method: "POST",
@@ -303,17 +299,32 @@ function App() {
           body: JSON.stringify({ txnId: meta.txnId, channelUrl: selectedChannel?.url, userId }),
         });
         const data = await res.json();
-        if (data.paymentUrl) window.open(data.paymentUrl, "_blank");
+        if (data.paymentUrl) {
+          window.open(data.paymentUrl, "_blank");
+        } else {
+          alert(data.error || data.message || "Could not create payment link. Please try again.");
+        }
       } catch (err) {
         console.error("Retry payment failed:", err);
+        alert("Could not reach the payment service. Please try again.");
       }
 
     } else if (action === "escalate") {
-      // Send a natural-language message — the webhook detects "escalation" intent
-      // and creates a Desk ticket (or forwards to the existing one if already open).
-      if (selectedChannel) {
-        const req = selectedChannel.sendUserMessage({ message: "I want to speak to a human agent." });
-        req.onFailed((err) => console.error("Escalation message failed:", err));
+      // Call /escalate directly — creates a Desk ticket immediately without
+      // relying on the webhook intent detection chain.
+      try {
+        const res = await fetch(`${BACKEND_URL}/escalate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channelUrl: selectedChannel?.url, userId }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || "Could not connect to an agent. Please try again.");
+        }
+      } catch (err) {
+        console.error("Escalation failed:", err);
+        alert("Could not reach support. Please try again.");
       }
 
     } else if (action === "faq") {
