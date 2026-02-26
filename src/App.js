@@ -2,8 +2,9 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import SendbirdChat from "@sendbird/chat";
 import { GroupChannelModule, GroupChannelHandler } from "@sendbird/chat/groupChannel";
 
-const APP_ID = "29927151-8F8F-4F44-9145-5EFA5355D486";
-const BOT_ID = "support_bot";
+const APP_ID = process.env.REACT_APP_SENDBIRD_APP_ID;
+const BOT_ID = process.env.REACT_APP_BOT_ID || "support_bot";
+const BACKEND_URL = "https://fintech-ai-backend-r8ap.onrender.com";
 
 function App() {
   const [userId, setUserId] = useState("");
@@ -19,6 +20,9 @@ function App() {
   const [typingUsers, setTypingUsers] = useState([]);
   const [unreadMap, setUnreadMap] = useState({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [faqContent, setFaqContent] = useState(null);       // inline FAQ panel text
+  const [paymentNotice, setPaymentNotice] = useState(null); // { type, txnId } after Stripe redirect
 
   const sbRef = useRef(null);
   const selectedChannelRef = useRef(null);
@@ -39,6 +43,22 @@ function App() {
     } else {
       setIsAutoLogging(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // =========================
+  // STRIPE REDIRECT DETECTION
+  // After Stripe redirects back, read ?payment=success|cancelled&txn=TXN1001
+  // from the URL, store it in state, then clean the URL bar.
+  // =========================
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const payment = params.get("payment");
+    const txn = params.get("txn");
+    if (payment && txn) {
+      setPaymentNotice({ type: payment, txnId: txn });
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, []);
 
   // =========================
@@ -51,7 +71,33 @@ function App() {
 
   const loginWithId = async (id) => {
     setIsConnecting(true);
+    setLoginError("");
     try {
+      // Enforce 20-user hard limit via backend.
+      // Only a deliberate 403 (limit reached) blocks login.
+      // 404 (old backend), 500, or network errors all let login proceed.
+      if (BACKEND_URL) {
+        try {
+          const res = await fetch(`${BACKEND_URL}/register-user`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId: id }),
+          });
+          if (res.status === 403) {
+            try {
+              const data = await res.json();
+              setLoginError(data.message || "Access denied. Please contact support.");
+            } catch {
+              setLoginError("This app has reached its user limit. Please contact support.");
+            }
+            return;
+          }
+          // 200, 201, 404 (old backend), 500 → all proceed with login
+        } catch (err) {
+          console.warn("User limit check unavailable, proceeding:", err.message);
+        }
+      }
+
       const sb = SendbirdChat.init({
         appId: APP_ID,
         modules: [new GroupChannelModule()],
@@ -106,36 +152,6 @@ function App() {
         loadChannels(sb);
       };
 
-      // ✅ Poll for new channels AND new messages every 5s
-      const pollInterval = setInterval(async () => {
-        try {
-          // Refresh channel list to pick up new Desk channels
-          const updatedChannels = await loadChannels(sb);
-
-          // Poll messages for currently selected channel
-          const current = selectedChannelRef.current;
-          if (!current) return;
-
-          const fresh = await sb.groupChannel.getChannel(current.url);
-          const latest = await fresh.getMessagesByTimestamp(Date.now(), {
-            prevResultSize: 10,
-            nextResultSize: 0,
-            isInclusive: true,
-          });
-          setMessages(prev => {
-            const existingIds = new Set(prev.map(m => m.messageId));
-            const newMsgs = latest.filter(m => !existingIds.has(m.messageId));
-            if (newMsgs.length === 0) return prev;
-            console.log("🔄 Polled new messages:", newMsgs.length);
-            return [...prev, ...newMsgs];
-          });
-        } catch (e) {
-          console.error("Poll error:", e.message);
-        }
-      }, 3000); // ✅ Reduced to 3s for faster delivery
-
-      sbRef.current._pollInterval = pollInterval;
-
       handler.onTypingStatusUpdated = (channel) => {
         if (selectedChannelRef.current?.url === channel.url) {
           const typers = channel.getTypingUsers();
@@ -159,9 +175,6 @@ function App() {
   // =========================
   const logout = async () => {
     if (sbRef.current) {
-      if (sbRef.current._pollInterval) {
-        clearInterval(sbRef.current._pollInterval); // ✅ Clear polling on logout
-      }
       sbRef.current.groupChannel.removeGroupChannelHandler("GLOBAL_HANDLER");
       await sbRef.current.disconnect();
     }
@@ -208,6 +221,7 @@ function App() {
   // SELECT CHANNEL
   // =========================
   const selectChannel = async (channel) => {
+    setFaqContent(null);
     setSelectedChannel(channel);
     localStorage.setItem("sb_selected_channel", channel.url); // ✅ Persist selected channel
     setTypingUsers([]);
@@ -270,6 +284,113 @@ function App() {
       setIsSending(false);
     });
   }, [text, selectedChannel, isSending]);
+
+  // =========================
+  // ACTION BUTTON HANDLER
+  // Called when the user clicks one of the interactive buttons embedded in a
+  // bot message (Retry Payment / Talk to Human / View FAQ).
+  // =========================
+  const handleButtonAction = useCallback(async (action, meta = {}) => {
+    if (action === "retry_payment") {
+      try {
+        const res = await fetch(`${BACKEND_URL}/retry-payment`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ txnId: meta.txnId, channelUrl: selectedChannel?.url, userId }),
+        });
+        const data = await res.json();
+        if (data.paymentUrl) {
+          // Try to open the payment page. If the browser's popup blocker prevents it,
+          // window.open returns null — fall back to showing a clickable link in an alert.
+          const opened = window.open(data.paymentUrl, "_blank");
+          if (!opened) {
+            alert(`Your browser blocked the payment page.\n\nPlease open this link manually:\n${data.paymentUrl}`);
+          }
+        } else {
+          alert(data.error || data.message || "Could not create payment link. Please try again.");
+        }
+      } catch (err) {
+        console.error("Retry payment failed:", err);
+        alert("Could not reach the payment service. Please try again.");
+      }
+
+    } else if (action === "escalate") {
+      // Show optimistic messages immediately so the user gets instant feedback
+      // even if the backend takes a while to respond (e.g. Render cold start).
+      const nowMs = Date.now();
+      const optUser = {
+        messageId: `opt_${nowMs}`,
+        sender: { userId },
+        message: "I need to speak to a human agent.",
+        createdAt: nowMs,
+      };
+      const optBot = {
+        messageId: `opt_${nowMs + 1}`,
+        sender: { userId: BOT_ID },
+        message: "Connecting you with a human agent... please wait while we create your support ticket.",
+        createdAt: nowMs + 1,
+      };
+      setMessages(prev => [...prev, optUser, optBot]);
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/escalate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channelUrl: selectedChannel?.url, userId }),
+        });
+        if (!res.ok) {
+          setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || "Could not connect to an agent. Please try again.");
+          return;
+        }
+        // Poll for the real bot message — Sendbird may miss the real-time event
+        // if the connection dropped during the Render cold-start delay.
+        const ch = selectedChannel;
+        const pollAt = [3000, 7000, 15000];
+        pollAt.forEach(delay => {
+          setTimeout(async () => {
+            if (!ch) return;
+            const history = await ch.getMessagesByTimestamp(Date.now(), {
+              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+            });
+            setMessages(history);
+          }, delay);
+        });
+      } catch (err) {
+        console.error("Escalation failed:", err);
+        setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
+        alert("Could not reach support. Please try again.");
+      }
+
+    } else if (action === "faq") {
+      // Query the KB for payment failure FAQ, then show the answer inline
+      // below the chat — no new Sendbird message needed.
+      if (!BACKEND_URL) {
+        setFaqContent(
+          "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues. Contact support for help."
+        );
+        return;
+      }
+      try {
+        const res = await fetch(`${BACKEND_URL}/knowledge-base`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: "payment failed" }),
+        });
+        const data = await res.json();
+        setFaqContent(
+          data.found
+            ? data.answer
+            : "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues. Contact support for further assistance."
+        );
+      } catch {
+        setFaqContent(
+          "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues."
+        );
+      }
+    }
+  }, [selectedChannel, userId]);
 
   // =========================
   // TYPING INDICATOR
@@ -340,13 +461,18 @@ function App() {
           <input
             placeholder="Enter your user ID"
             value={inputUserId}
-            onChange={(e) => setInputUserId(e.target.value)}
+            onChange={(e) => { setInputUserId(e.target.value); setLoginError(""); }}
             onKeyDown={(e) => e.key === "Enter" && login()}
             style={styles.loginInput}
           />
           <button onClick={login} style={styles.loginButton} disabled={isConnecting}>
             {isConnecting ? "Connecting..." : "Sign In"}
           </button>
+          {loginError && (
+            <div style={{ marginTop: "12px", padding: "10px 14px", background: "#fff0f0", border: "1px solid #f5c6cb", borderRadius: "8px", color: "#c0392b", fontSize: "13px", textAlign: "left" }}>
+              {loginError}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -463,6 +589,26 @@ function App() {
               </div>
             </div>
 
+            {/* Payment redirect notice — shown after Stripe redirects back */}
+            {paymentNotice && (
+              <div style={{
+                padding: "10px 16px",
+                background: paymentNotice.type === "success" ? "#e8f8e8" : "#fff8e8",
+                borderBottom: `1px solid ${paymentNotice.type === "success" ? "#a8dca8" : "#ffd08a"}`,
+                fontSize: "13px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}>
+                <span style={{ color: paymentNotice.type === "success" ? "#27ae60" : "#e67e22", fontWeight: "500" }}>
+                  {paymentNotice.type === "success"
+                    ? `Payment for ${paymentNotice.txnId} was successful!`
+                    : `Payment for ${paymentNotice.txnId} was cancelled. You can retry below.`}
+                </span>
+                <button onClick={() => setPaymentNotice(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>
+              </div>
+            )}
+
             <div style={styles.chatArea}>
               {messages.map((msg) => {
                 if (!msg.message) return null;
@@ -502,6 +648,29 @@ function App() {
                       }}>
                         {msg.message}
                       </div>
+                      {/* Action buttons — rendered for any incoming (non-user) message
+                          that carries a data payload with type:"action_buttons".
+                          Uses !isUser instead of isBot so agent messages with buttons
+                          also render correctly and BOT_ID mismatches can't silently break this. */}
+                      {!isUser && (() => {
+                        if (!msg.data) return null;
+                        let msgData = null;
+                        try { msgData = JSON.parse(msg.data); } catch { return null; }
+                        if (msgData?.type !== "action_buttons" || !msgData.buttons?.length) return null;
+                        return (
+                          <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
+                            {msgData.buttons.map((btn) => (
+                              <button
+                                key={btn.action}
+                                onClick={() => handleButtonAction(btn.action, { txnId: btn.txnId || msgData.txnId })}
+                                style={{ padding: "6px 14px", borderRadius: "16px", border: "1px solid #1e2a38", background: "#fff", color: "#1e2a38", fontSize: "12px", cursor: "pointer", fontWeight: "500" }}
+                              >
+                                {btn.label}
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
                       <div style={{ fontSize: "10px", color: "#bbb", marginTop: "3px", textAlign: isUser ? "right" : "left", paddingLeft: "4px" }}>
                         {formatTime(msg.createdAt)}
                       </div>
@@ -522,6 +691,17 @@ function App() {
               )}
               <div ref={bottomRef} />
             </div>
+
+            {/* Inline FAQ panel — shown when user clicks "View FAQ" button */}
+            {faqContent && (
+              <div style={{ padding: "12px 16px", background: "#f0f4ff", borderTop: "1px solid #d0dcff", fontSize: "13px", color: "#333" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "6px" }}>
+                  <strong style={{ fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "0.5px" }}>FAQ</strong>
+                  <button onClick={() => setFaqContent(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>
+                </div>
+                <div style={{ lineHeight: "1.6" }}>{faqContent}</div>
+              </div>
+            )}
 
             <div style={styles.inputArea}>
               <input
