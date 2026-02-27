@@ -239,7 +239,7 @@ function App() {
   const selectChannel = async (channel) => {
     setFaqContent(null);
     setSelectedChannel(channel);
-    localStorage.setItem("sb_selected_channel", channel.url); // ✅ Persist selected channel
+    localStorage.setItem("sb_selected_channel", channel.url);
     setTypingUsers([]);
     if (isMobile) setShowSidebarOnMobile(false);
     setUnreadMap(prev => ({ ...prev, [channel.url]: 0 }));
@@ -250,6 +250,20 @@ function App() {
       isInclusive: true,
     });
     setMessages(history);
+
+    // Send a one-time welcome message with category buttons when the channel
+    // has no prior messages so the user always sees a helpful starting prompt.
+    if (history.length === 0 && BACKEND_URL) {
+      try {
+        await fetch(`${BACKEND_URL}/welcome`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channelUrl: channel.url, userId }),
+        });
+      } catch (err) {
+        console.warn("Welcome call failed (non-fatal):", err);
+      }
+    }
   };
 
   // =========================
@@ -430,6 +444,29 @@ function App() {
         console.error("Refund action failed:", err);
         setMessages((prev) => prev.filter((m) => m.messageId !== optLoadingMsg.messageId));
         alert("Could not reach the service. Please try again.");
+      }
+
+    } else if (
+      action === "check_transaction" ||
+      action === "ask_refund" ||
+      action === "ask_retry"
+    ) {
+      // Welcome-button shortcuts: auto-send a user message that kicks off the
+      // normal bot flow (LLM detects intent → asks follow-up questions).
+      const autoTextMap = {
+        check_transaction: "I want to check my transaction status",
+        ask_refund:        "I want to request a refund",
+        ask_retry:         "I want to retry my failed payment",
+      };
+      const autoText = autoTextMap[action];
+      if (selectedChannel && autoText) {
+        const request = selectedChannel.sendUserMessage({ message: autoText });
+        request.onSucceeded((message) => {
+          setMessages(prev => {
+            if (prev.some(m => m.messageId === message.messageId)) return prev;
+            return [...prev, message];
+          });
+        });
       }
 
     } else if (action === "faq") {
