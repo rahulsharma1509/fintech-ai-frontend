@@ -23,6 +23,8 @@ function App() {
   const [loginError, setLoginError] = useState("");
   const [faqContent, setFaqContent] = useState(null);       // inline FAQ panel text
   const [paymentNotice, setPaymentNotice] = useState(null); // { type, txnId } after Stripe redirect
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [showSidebarOnMobile, setShowSidebarOnMobile] = useState(true);
 
   const sbRef = useRef(null);
   const selectedChannelRef = useRef(null);
@@ -31,6 +33,20 @@ function App() {
   useEffect(() => {
     selectedChannelRef.current = selectedChannel;
   }, [selectedChannel]);
+
+  // =========================
+  // RESPONSIVE: track window width
+  // =========================
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // On mobile, always show sidebar when no channel is selected
+  useEffect(() => {
+    if (!selectedChannel && isMobile) setShowSidebarOnMobile(true);
+  }, [selectedChannel, isMobile]);
 
   // =========================
   // AUTO LOGIN ON REFRESH
@@ -225,6 +241,7 @@ function App() {
     setSelectedChannel(channel);
     localStorage.setItem("sb_selected_channel", channel.url); // ✅ Persist selected channel
     setTypingUsers([]);
+    if (isMobile) setShowSidebarOnMobile(false);
     setUnreadMap(prev => ({ ...prev, [channel.url]: 0 }));
     channel.markAsRead();
     const history = await channel.getMessagesByTimestamp(Date.now(), {
@@ -360,6 +377,61 @@ function App() {
         alert("Could not reach support. Please try again.");
       }
 
+    } else if (
+      action === "refund_start" ||
+      action === "refund_reason" ||
+      action === "refund_accept_partial" ||
+      action === "refund_decline"
+    ) {
+      // ── Refund negotiation engine ──
+      // Show an optimistic loading message immediately so the user knows
+      // the click registered (matches the UX pattern of the escalate handler).
+      const nowMs = Date.now();
+      const optLoadingMsg = {
+        messageId: `opt_refund_${nowMs}`,
+        sender: { userId: BOT_ID },
+        message: "Processing your request…",
+        createdAt: nowMs,
+      };
+      setMessages((prev) => [...prev, optLoadingMsg]);
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/refund-action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channelUrl: selectedChannel?.url,
+            userId,
+            txnId: meta.txnId,
+            action,
+            reason: meta.reason,  // present only for refund_reason buttons
+          }),
+        });
+        if (!res.ok) {
+          // Remove loading message and show error
+          setMessages((prev) => prev.filter((m) => m.messageId !== optLoadingMsg.messageId));
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || "Could not process refund action. Please try again.");
+          return;
+        }
+        // Poll at increasing intervals to catch cold-start delay on the backend.
+        // Each poll replaces the full messages list (including the opt placeholder).
+        const ch = selectedChannel;
+        [2000, 5000, 10000, 15000].forEach((delay) => {
+          setTimeout(async () => {
+            if (!ch) return;
+            const history = await ch.getMessagesByTimestamp(Date.now(), {
+              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+            });
+            setMessages(history);
+          }, delay);
+        });
+      } catch (err) {
+        console.error("Refund action failed:", err);
+        setMessages((prev) => prev.filter((m) => m.messageId !== optLoadingMsg.messageId));
+        alert("Could not reach the service. Please try again.");
+      }
+
     } else if (action === "faq") {
       // Query the KB for payment failure FAQ, then show the answer inline
       // below the chat — no new Sendbird message needed.
@@ -451,7 +523,11 @@ function App() {
   if (!isLoggedIn) {
     return (
       <div style={styles.loginWrapper}>
-        <div style={styles.loginCard}>
+        <div style={{
+          ...styles.loginCard,
+          width: isMobile ? "calc(100% - 48px)" : "380px",
+          padding: isMobile ? "32px 24px" : "48px 40px",
+        }}>
           <div style={styles.logo}>💼</div>
           <h2 style={{ margin: "0 0 6px", fontSize: "22px" }}>Support Portal</h2>
           <p style={{ color: "#888", margin: "0 0 24px", fontSize: "14px" }}>Sign in to manage your support tickets</p>
@@ -481,7 +557,11 @@ function App() {
   return (
     <div style={styles.container}>
       {/* SIDEBAR */}
-      <div style={styles.sidebar}>
+      <div style={{
+        ...styles.sidebar,
+        width: isMobile ? "100%" : "300px",
+        display: isMobile ? (showSidebarOnMobile ? "flex" : "none") : "flex",
+      }}>
         <div style={styles.userInfo}>
           <div style={styles.avatar}>{userId[0]?.toUpperCase()}</div>
           <div style={{ flex: 1 }}>
@@ -566,7 +646,10 @@ function App() {
       </div>
 
       {/* CHAT WINDOW */}
-      <div style={styles.chatContainer}>
+      <div style={{
+        ...styles.chatContainer,
+        display: isMobile ? (showSidebarOnMobile ? "none" : "flex") : "flex",
+      }}>
         {!selectedChannel ? (
           <div style={styles.emptyState}>
             <div style={{ fontSize: "48px" }}>💬</div>
@@ -579,6 +662,13 @@ function App() {
         ) : (
           <>
             <div style={styles.chatHeader}>
+              {isMobile && (
+                <button
+                  onClick={() => setShowSidebarOnMobile(true)}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: "20px", padding: "0 8px 0 0", color: "#1e2a38" }}
+                  title="Back to tickets"
+                >←</button>
+              )}
               <div style={styles.channelIcon}>🎫</div>
               <div>
                 <div style={{ fontWeight: "600" }}>{selectedChannel.name || "Support Ticket"}</div>
@@ -628,7 +718,7 @@ function App() {
                         {isBot ? "🤖" : msg.sender?.userId?.[0]?.toUpperCase()}
                       </div>
                     )}
-                    <div style={{ maxWidth: "65%" }}>
+                    <div style={{ maxWidth: isMobile ? "85%" : "65%" }}>
                       {!isUser && (
                         <div style={{ fontSize: "10px", color: "#aaa", marginBottom: "3px", paddingLeft: "4px" }}>
                           {isBot ? "Support Bot" : msg.sender?.userId}
@@ -645,28 +735,88 @@ function App() {
                       }}>
                         {msg.message}
                       </div>
-                      {/* Action buttons — rendered for any incoming (non-user) message
-                          that carries a data payload with type:"action_buttons".
-                          Uses !isUser instead of isBot so agent messages with buttons
-                          also render correctly and BOT_ID mismatches can't silently break this. */}
+                      {/* ── Rich data rendering ──────────────────────────────
+                          Handles three payload types that the backend embeds in
+                          message.data (a JSON string):
+                          • action_buttons  → interactive button row
+                          • priority_badge  → HIGH / NORMAL priority chip
+                          • refund_status   → refund outcome badge            */}
                       {!isUser && (() => {
                         if (!msg.data) return null;
                         let msgData = null;
                         try { msgData = JSON.parse(msg.data); } catch { return null; }
-                        if (msgData?.type !== "action_buttons" || !msgData.buttons?.length) return null;
-                        return (
-                          <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
-                            {msgData.buttons.map((btn) => (
-                              <button
-                                key={btn.action}
-                                onClick={() => handleButtonAction(btn.action, { txnId: btn.txnId || msgData.txnId })}
-                                style={{ padding: "6px 14px", borderRadius: "16px", border: "1px solid #1e2a38", background: "#fff", color: "#1e2a38", fontSize: "12px", cursor: "pointer", fontWeight: "500" }}
-                              >
-                                {btn.label}
-                              </button>
-                            ))}
-                          </div>
-                        );
+
+                        // ── action_buttons ───────────────────────────────────
+                        if (msgData?.type === "action_buttons" && msgData.buttons?.length) {
+                          return (
+                            <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
+                              {msgData.buttons.map((btn) => (
+                                <button
+                                  key={btn.action + (btn.reason || "")}
+                                  onClick={() => handleButtonAction(btn.action, {
+                                    txnId: btn.txnId || msgData.txnId,
+                                    reason: btn.reason,
+                                  })}
+                                  style={{
+                                    padding: "6px 14px",
+                                    borderRadius: "16px",
+                                    border: `1px solid ${btn.reason === "fraud" ? "#e74c3c" : "#1e2a38"}`,
+                                    background: btn.reason === "fraud" ? "#fff5f5" : "#fff",
+                                    color: btn.reason === "fraud" ? "#e74c3c" : "#1e2a38",
+                                    fontSize: "12px", cursor: "pointer", fontWeight: "500",
+                                  }}
+                                >
+                                  {btn.label}
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        }
+
+                        // ── priority_badge ───────────────────────────────────
+                        if (msgData?.type === "priority_badge") {
+                          const isHigh = msgData.priority === "HIGH";
+                          return (
+                            <div style={{ marginTop: "8px" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: "4px",
+                                padding: "3px 10px", borderRadius: "12px", fontSize: "11px",
+                                fontWeight: "700", letterSpacing: "0.3px",
+                                background: isHigh ? "#fdecea" : "#fff8e1",
+                                color: isHigh ? "#c0392b" : "#e67e22",
+                                border: `1px solid ${isHigh ? "#f5c6cb" : "#ffd08a"}`,
+                              }}>
+                                {isHigh ? "🚨 HIGH PRIORITY" : "⚠️ ESCALATED"}
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        // ── refund_status ────────────────────────────────────
+                        if (msgData?.type === "refund_status") {
+                          const statusConfig = {
+                            refunded:      { label: "✅ Refund Processed",  bg: "#e8f8e8", color: "#27ae60", border: "#a8dca8" },
+                            coupon_issued: { label: "🎟 Coupon Issued",      bg: "#f0f4ff", color: "#2980b9", border: "#d0dcff" },
+                          };
+                          const cfg = statusConfig[msgData.status];
+                          if (!cfg) return null;
+                          return (
+                            <div style={{ marginTop: "8px" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: "4px",
+                                padding: "3px 10px", borderRadius: "12px", fontSize: "11px",
+                                fontWeight: "700", background: cfg.bg, color: cfg.color,
+                                border: `1px solid ${cfg.border}`,
+                              }}>
+                                {cfg.label}
+                                {msgData.amount ? ` · $${Number(msgData.amount).toFixed(2)}` : ""}
+                                {msgData.couponCode ? ` · ${msgData.couponCode}` : ""}
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        return null;
                       })()}
                       <div style={{ fontSize: "10px", color: "#bbb", marginTop: "3px", textAlign: isUser ? "right" : "left", paddingLeft: "4px" }}>
                         {formatTime(msg.createdAt)}
