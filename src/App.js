@@ -451,22 +451,59 @@ function App() {
       action === "ask_refund" ||
       action === "ask_retry"
     ) {
-      // Welcome-button shortcuts: auto-send a user message that kicks off the
-      // normal bot flow (LLM detects intent → asks follow-up questions).
-      const autoTextMap = {
-        check_transaction: "I want to check my transaction status",
-        ask_refund:        "I want to request a refund",
-        ask_retry:         "I want to retry my failed payment",
-      };
-      const autoText = autoTextMap[action];
-      if (selectedChannel && autoText) {
-        const request = selectedChannel.sendUserMessage({ message: autoText });
-        request.onSucceeded((message) => {
-          setMessages(prev => {
-            if (prev.some(m => m.messageId === message.messageId)) return prev;
-            return [...prev, message];
-          });
+      // All three welcome categories need a TXN selection first.
+      // Fetch the user's last 5 transactions and display them as buttons.
+      try {
+        await fetch(`${BACKEND_URL}/transaction-list`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channelUrl: selectedChannel?.url, userId }),
         });
+        const ch = selectedChannel;
+        [2000, 5000].forEach((delay) => {
+          setTimeout(async () => {
+            if (!ch) return;
+            const history = await ch.getMessagesByTimestamp(Date.now(), {
+              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+            });
+            setMessages(history);
+          }, delay);
+        });
+      } catch (err) {
+        console.error("Transaction list failed:", err);
+      }
+
+    } else if (action === "view_transaction") {
+      // User tapped one of the listed transactions — show its status + relevant action buttons.
+      const nowMs = Date.now();
+      const optLoading = {
+        messageId: `opt_view_${nowMs}`,
+        sender: { userId: BOT_ID },
+        message: "Looking up transaction details…",
+        createdAt: nowMs,
+      };
+      setMessages((prev) => [...prev, optLoading]);
+
+      try {
+        await fetch(`${BACKEND_URL}/view-transaction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channelUrl: selectedChannel?.url, userId, txnId: meta.txnId }),
+        });
+        const ch = selectedChannel;
+        [2000, 5000, 10000].forEach((delay) => {
+          setTimeout(async () => {
+            if (!ch) return;
+            const history = await ch.getMessagesByTimestamp(Date.now(), {
+              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+            });
+            setMessages(history);
+          }, delay);
+        });
+      } catch (err) {
+        console.error("View transaction failed:", err);
+        setMessages((prev) => prev.filter((m) => m.messageId !== optLoading.messageId));
+        alert("Could not fetch transaction details. Please try again.");
       }
 
     } else if (action === "faq") {
