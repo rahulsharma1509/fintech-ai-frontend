@@ -384,8 +384,17 @@ function App() {
       action === "refund_decline"
     ) {
       // ── Refund negotiation engine ──
-      // Every step of the refund flow goes to /refund-action.
-      // The backend sends all bot responses directly — frontend just fires the call.
+      // Show an optimistic loading message immediately so the user knows
+      // the click registered (matches the UX pattern of the escalate handler).
+      const nowMs = Date.now();
+      const optLoadingMsg = {
+        messageId: `opt_refund_${nowMs}`,
+        sender: { userId: BOT_ID },
+        message: "Processing your request…",
+        createdAt: nowMs,
+      };
+      setMessages((prev) => [...prev, optLoadingMsg]);
+
       try {
         const res = await fetch(`${BACKEND_URL}/refund-action`, {
           method: "POST",
@@ -399,13 +408,16 @@ function App() {
           }),
         });
         if (!res.ok) {
+          // Remove loading message and show error
+          setMessages((prev) => prev.filter((m) => m.messageId !== optLoadingMsg.messageId));
           const data = await res.json().catch(() => ({}));
           alert(data.error || "Could not process refund action. Please try again.");
           return;
         }
-        // Poll for the bot's response — covers backend cold-start delay
+        // Poll at increasing intervals to catch cold-start delay on the backend.
+        // Each poll replaces the full messages list (including the opt placeholder).
         const ch = selectedChannel;
-        [2000, 5000].forEach((delay) => {
+        [2000, 5000, 10000, 15000].forEach((delay) => {
           setTimeout(async () => {
             if (!ch) return;
             const history = await ch.getMessagesByTimestamp(Date.now(), {
@@ -416,6 +428,7 @@ function App() {
         });
       } catch (err) {
         console.error("Refund action failed:", err);
+        setMessages((prev) => prev.filter((m) => m.messageId !== optLoadingMsg.messageId));
         alert("Could not reach the service. Please try again.");
       }
 
