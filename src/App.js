@@ -23,6 +23,8 @@ function App() {
   const [loginError, setLoginError] = useState("");
   const [faqContent, setFaqContent] = useState(null);       // inline FAQ panel text
   const [paymentNotice, setPaymentNotice] = useState(null); // { type, txnId } after Stripe redirect
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [showSidebarOnMobile, setShowSidebarOnMobile] = useState(true);
 
   const sbRef = useRef(null);
   const selectedChannelRef = useRef(null);
@@ -31,6 +33,20 @@ function App() {
   useEffect(() => {
     selectedChannelRef.current = selectedChannel;
   }, [selectedChannel]);
+
+  // =========================
+  // RESPONSIVE: track window width
+  // =========================
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // On mobile, always show sidebar when no channel is selected
+  useEffect(() => {
+    if (!selectedChannel && isMobile) setShowSidebarOnMobile(true);
+  }, [selectedChannel, isMobile]);
 
   // =========================
   // AUTO LOGIN ON REFRESH
@@ -225,6 +241,7 @@ function App() {
     setSelectedChannel(channel);
     localStorage.setItem("sb_selected_channel", channel.url); // ✅ Persist selected channel
     setTypingUsers([]);
+    if (isMobile) setShowSidebarOnMobile(false);
     setUnreadMap(prev => ({ ...prev, [channel.url]: 0 }));
     channel.markAsRead();
     const history = await channel.getMessagesByTimestamp(Date.now(), {
@@ -451,7 +468,11 @@ function App() {
   if (!isLoggedIn) {
     return (
       <div style={styles.loginWrapper}>
-        <div style={styles.loginCard}>
+        <div style={{
+          ...styles.loginCard,
+          width: isMobile ? "calc(100% - 48px)" : "380px",
+          padding: isMobile ? "32px 24px" : "48px 40px",
+        }}>
           <div style={styles.logo}>💼</div>
           <h2 style={{ margin: "0 0 6px", fontSize: "22px" }}>Support Portal</h2>
           <p style={{ color: "#888", margin: "0 0 24px", fontSize: "14px" }}>Sign in to manage your support tickets</p>
@@ -481,7 +502,11 @@ function App() {
   return (
     <div style={styles.container}>
       {/* SIDEBAR */}
-      <div style={styles.sidebar}>
+      <div style={{
+        ...styles.sidebar,
+        width: isMobile ? "100%" : "300px",
+        display: isMobile ? (showSidebarOnMobile ? "flex" : "none") : "flex",
+      }}>
         <div style={styles.userInfo}>
           <div style={styles.avatar}>{userId[0]?.toUpperCase()}</div>
           <div style={{ flex: 1 }}>
@@ -566,7 +591,10 @@ function App() {
       </div>
 
       {/* CHAT WINDOW */}
-      <div style={styles.chatContainer}>
+      <div style={{
+        ...styles.chatContainer,
+        display: isMobile ? (showSidebarOnMobile ? "none" : "flex") : "flex",
+      }}>
         {!selectedChannel ? (
           <div style={styles.emptyState}>
             <div style={{ fontSize: "48px" }}>💬</div>
@@ -579,6 +607,13 @@ function App() {
         ) : (
           <>
             <div style={styles.chatHeader}>
+              {isMobile && (
+                <button
+                  onClick={() => setShowSidebarOnMobile(true)}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: "20px", padding: "0 8px 0 0", color: "#1e2a38" }}
+                  title="Back to tickets"
+                >←</button>
+              )}
               <div style={styles.channelIcon}>🎫</div>
               <div>
                 <div style={{ fontWeight: "600" }}>{selectedChannel.name || "Support Ticket"}</div>
@@ -628,7 +663,7 @@ function App() {
                         {isBot ? "🤖" : msg.sender?.userId?.[0]?.toUpperCase()}
                       </div>
                     )}
-                    <div style={{ maxWidth: "65%" }}>
+                    <div style={{ maxWidth: isMobile ? "85%" : "65%" }}>
                       {!isUser && (
                         <div style={{ fontSize: "10px", color: "#aaa", marginBottom: "3px", paddingLeft: "4px" }}>
                           {isBot ? "Support Bot" : msg.sender?.userId}
