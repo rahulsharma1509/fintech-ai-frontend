@@ -377,6 +377,48 @@ function App() {
         alert("Could not reach support. Please try again.");
       }
 
+    } else if (
+      action === "refund_start" ||
+      action === "refund_reason" ||
+      action === "refund_accept_partial" ||
+      action === "refund_decline"
+    ) {
+      // ── Refund negotiation engine ──
+      // Every step of the refund flow goes to /refund-action.
+      // The backend sends all bot responses directly — frontend just fires the call.
+      try {
+        const res = await fetch(`${BACKEND_URL}/refund-action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channelUrl: selectedChannel?.url,
+            userId,
+            txnId: meta.txnId,
+            action,
+            reason: meta.reason,  // present only for refund_reason buttons
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || "Could not process refund action. Please try again.");
+          return;
+        }
+        // Poll for the bot's response — covers backend cold-start delay
+        const ch = selectedChannel;
+        [2000, 5000].forEach((delay) => {
+          setTimeout(async () => {
+            if (!ch) return;
+            const history = await ch.getMessagesByTimestamp(Date.now(), {
+              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+            });
+            setMessages(history);
+          }, delay);
+        });
+      } catch (err) {
+        console.error("Refund action failed:", err);
+        alert("Could not reach the service. Please try again.");
+      }
+
     } else if (action === "faq") {
       // Query the KB for payment failure FAQ, then show the answer inline
       // below the chat — no new Sendbird message needed.
@@ -680,28 +722,88 @@ function App() {
                       }}>
                         {msg.message}
                       </div>
-                      {/* Action buttons — rendered for any incoming (non-user) message
-                          that carries a data payload with type:"action_buttons".
-                          Uses !isUser instead of isBot so agent messages with buttons
-                          also render correctly and BOT_ID mismatches can't silently break this. */}
+                      {/* ── Rich data rendering ──────────────────────────────
+                          Handles three payload types that the backend embeds in
+                          message.data (a JSON string):
+                          • action_buttons  → interactive button row
+                          • priority_badge  → HIGH / NORMAL priority chip
+                          • refund_status   → refund outcome badge            */}
                       {!isUser && (() => {
                         if (!msg.data) return null;
                         let msgData = null;
                         try { msgData = JSON.parse(msg.data); } catch { return null; }
-                        if (msgData?.type !== "action_buttons" || !msgData.buttons?.length) return null;
-                        return (
-                          <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
-                            {msgData.buttons.map((btn) => (
-                              <button
-                                key={btn.action}
-                                onClick={() => handleButtonAction(btn.action, { txnId: btn.txnId || msgData.txnId })}
-                                style={{ padding: "6px 14px", borderRadius: "16px", border: "1px solid #1e2a38", background: "#fff", color: "#1e2a38", fontSize: "12px", cursor: "pointer", fontWeight: "500" }}
-                              >
-                                {btn.label}
-                              </button>
-                            ))}
-                          </div>
-                        );
+
+                        // ── action_buttons ───────────────────────────────────
+                        if (msgData?.type === "action_buttons" && msgData.buttons?.length) {
+                          return (
+                            <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
+                              {msgData.buttons.map((btn) => (
+                                <button
+                                  key={btn.action + (btn.reason || "")}
+                                  onClick={() => handleButtonAction(btn.action, {
+                                    txnId: btn.txnId || msgData.txnId,
+                                    reason: btn.reason,
+                                  })}
+                                  style={{
+                                    padding: "6px 14px",
+                                    borderRadius: "16px",
+                                    border: `1px solid ${btn.reason === "fraud" ? "#e74c3c" : "#1e2a38"}`,
+                                    background: btn.reason === "fraud" ? "#fff5f5" : "#fff",
+                                    color: btn.reason === "fraud" ? "#e74c3c" : "#1e2a38",
+                                    fontSize: "12px", cursor: "pointer", fontWeight: "500",
+                                  }}
+                                >
+                                  {btn.label}
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        }
+
+                        // ── priority_badge ───────────────────────────────────
+                        if (msgData?.type === "priority_badge") {
+                          const isHigh = msgData.priority === "HIGH";
+                          return (
+                            <div style={{ marginTop: "8px" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: "4px",
+                                padding: "3px 10px", borderRadius: "12px", fontSize: "11px",
+                                fontWeight: "700", letterSpacing: "0.3px",
+                                background: isHigh ? "#fdecea" : "#fff8e1",
+                                color: isHigh ? "#c0392b" : "#e67e22",
+                                border: `1px solid ${isHigh ? "#f5c6cb" : "#ffd08a"}`,
+                              }}>
+                                {isHigh ? "🚨 HIGH PRIORITY" : "⚠️ ESCALATED"}
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        // ── refund_status ────────────────────────────────────
+                        if (msgData?.type === "refund_status") {
+                          const statusConfig = {
+                            refunded:      { label: "✅ Refund Processed",  bg: "#e8f8e8", color: "#27ae60", border: "#a8dca8" },
+                            coupon_issued: { label: "🎟 Coupon Issued",      bg: "#f0f4ff", color: "#2980b9", border: "#d0dcff" },
+                          };
+                          const cfg = statusConfig[msgData.status];
+                          if (!cfg) return null;
+                          return (
+                            <div style={{ marginTop: "8px" }}>
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: "4px",
+                                padding: "3px 10px", borderRadius: "12px", fontSize: "11px",
+                                fontWeight: "700", background: cfg.bg, color: cfg.color,
+                                border: `1px solid ${cfg.border}`,
+                              }}>
+                                {cfg.label}
+                                {msgData.amount ? ` · $${Number(msgData.amount).toFixed(2)}` : ""}
+                                {msgData.couponCode ? ` · ${msgData.couponCode}` : ""}
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        return null;
                       })()}
                       <div style={{ fontSize: "10px", color: "#bbb", marginTop: "3px", textAlign: isUser ? "right" : "left", paddingLeft: "4px" }}>
                         {formatTime(msg.createdAt)}
