@@ -1,97 +1,83 @@
+import "./App.css";
 import { useEffect, useState, useRef, useCallback } from "react";
 import SendbirdChat from "@sendbird/chat";
 import { GroupChannelModule, GroupChannelHandler } from "@sendbird/chat/groupChannel";
 
-const APP_ID = process.env.REACT_APP_SENDBIRD_APP_ID;
-const BOT_ID = process.env.REACT_APP_BOT_ID || "support_bot";
+const APP_ID      = process.env.REACT_APP_SENDBIRD_APP_ID;
+const BOT_ID      = process.env.REACT_APP_BOT_ID || "support_bot";
 const BACKEND_URL = "https://fintech-ai-backend-r8ap.onrender.com";
 
 function App() {
-  const [userId, setUserId] = useState("");
-  const [inputUserId, setInputUserId] = useState("");
-  const [channels, setChannels] = useState([]);
-  const [selectedChannel, setSelectedChannel] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [text, setText] = useState("");
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isAutoLogging, setIsAutoLogging] = useState(true);
-  const [isSending, setIsSending] = useState(false);
-  const [typingUsers, setTypingUsers] = useState([]);
-  const [unreadMap, setUnreadMap] = useState({});
-  const [searchQuery, setSearchQuery] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [faqContent, setFaqContent] = useState(null);       // inline FAQ panel text
-  const [paymentNotice, setPaymentNotice] = useState(null); // { type, txnId } after Stripe redirect
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [userId, setUserId]                     = useState("");
+  const [inputUserId, setInputUserId]           = useState("");
+  const [channels, setChannels]                 = useState([]);
+  const [selectedChannel, setSelectedChannel]   = useState(null);
+  const [messages, setMessages]                 = useState([]);
+  const [text, setText]                         = useState("");
+  const [isLoggedIn, setIsLoggedIn]             = useState(false);
+  const [isConnecting, setIsConnecting]         = useState(false);
+  const [isAutoLogging, setIsAutoLogging]       = useState(true);
+  const [isSending, setIsSending]               = useState(false);
+  const [typingUsers, setTypingUsers]           = useState([]);
+  const [unreadMap, setUnreadMap]               = useState({});
+  const [searchQuery, setSearchQuery]           = useState("");
+  const [loginError, setLoginError]             = useState("");
+  const [faqContent, setFaqContent]             = useState(null);
+  const [paymentNotice, setPaymentNotice]       = useState(null);
+  const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
   const [showSidebarOnMobile, setShowSidebarOnMobile] = useState(true);
 
-  const sbRef = useRef(null);
-  const selectedChannelRef = useRef(null);
-  const bottomRef = useRef(null);
+  const sbRef                 = useRef(null);
+  const selectedChannelRef    = useRef(null);
+  const bottomRef             = useRef(null);
 
-  useEffect(() => {
-    selectedChannelRef.current = selectedChannel;
-  }, [selectedChannel]);
+  useEffect(() => { selectedChannelRef.current = selectedChannel; }, [selectedChannel]);
 
-  // =========================
-  // RESPONSIVE: track window width
-  // =========================
+  // ── Responsive ──────────────────────────────────────────────────────
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // On mobile, always show sidebar when no channel is selected
   useEffect(() => {
     if (!selectedChannel && isMobile) setShowSidebarOnMobile(true);
   }, [selectedChannel, isMobile]);
 
-  // =========================
-  // AUTO LOGIN ON REFRESH
-  // =========================
+  // ── Auto-login on refresh ───────────────────────────────────────────
   useEffect(() => {
-    const savedUserId = localStorage.getItem("sb_user_id");
-    if (savedUserId) {
-      setInputUserId(savedUserId);
-      loginWithId(savedUserId);
-    } else {
-      setIsAutoLogging(false);
-    }
+    const saved = localStorage.getItem("sb_user_id");
+    if (saved) { setInputUserId(saved); loginWithId(saved); }
+    else        { setIsAutoLogging(false); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // =========================
-  // STRIPE REDIRECT DETECTION
-  // After Stripe redirects back, read ?payment=success|cancelled&txn=TXN1001
-  // from the URL, store it in state, then clean the URL bar.
-  // =========================
+  // ── Stripe redirect detection ────────────────────────────────────────
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params  = new URLSearchParams(window.location.search);
     const payment = params.get("payment");
-    const txn = params.get("txn");
+    const txn     = params.get("txn");
     if (payment && txn) {
       setPaymentNotice({ type: payment, txnId: txn });
       window.history.replaceState({}, "", window.location.pathname);
     }
   }, []);
 
-  // =========================
-  // LOGIN
-  // =========================
+  // ── Auto-scroll ──────────────────────────────────────────────────────
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // ── Login ────────────────────────────────────────────────────────────
   const login = async () => {
     if (!inputUserId.trim()) return;
-    await loginWithId(inputUserId);
+    await loginWithId(inputUserId.trim());
   };
 
   const loginWithId = async (id) => {
     setIsConnecting(true);
     setLoginError("");
     try {
-      // Enforce 20-user hard limit via backend.
-      // Only a deliberate 403 (limit reached) blocks login.
-      // 404 (old backend), 500, or network errors all let login proceed.
       if (BACKEND_URL) {
         try {
           const res = await fetch(`${BACKEND_URL}/register-user`, {
@@ -100,95 +86,68 @@ function App() {
             body: JSON.stringify({ userId: id }),
           });
           if (res.status === 403) {
-            try {
-              const data = await res.json();
-              setLoginError(data.message || "Access denied. Please contact support.");
-            } catch {
-              setLoginError("This app has reached its user limit. Please contact support.");
-            }
+            const data = await res.json().catch(() => ({}));
+            setLoginError(data.message || "This app has reached its user limit. Please contact support.");
             return;
           }
-          // 200, 201, 404 (old backend), 500 → all proceed with login
         } catch (err) {
-          console.warn("User limit check unavailable, proceeding:", err.message);
+          console.warn("User limit check unavailable:", err.message);
         }
       }
 
-      const sb = SendbirdChat.init({
-        appId: APP_ID,
-        modules: [new GroupChannelModule()],
-      });
-
+      const sb = SendbirdChat.init({ appId: APP_ID, modules: [new GroupChannelModule()] });
       sbRef.current = sb;
       await sb.connect(id);
       localStorage.setItem("sb_user_id", id);
       setUserId(id);
       setIsLoggedIn(true);
-      const loadedChannels = await loadChannels(sb);
 
-      // ✅ Restore last selected channel after refresh
-      const savedChannelUrl = localStorage.getItem("sb_selected_channel");
-      if (savedChannelUrl && loadedChannels) {
-        const restored = loadedChannels.find(c => c.url === savedChannelUrl);
+      const loadedChannels = await loadChannels(sb);
+      const savedUrl = localStorage.getItem("sb_selected_channel");
+      if (savedUrl && loadedChannels) {
+        const restored = loadedChannels.find(c => c.url === savedUrl);
         if (restored) await selectChannel(restored);
       }
 
       const handler = new GroupChannelHandler();
+
       handler.onMessageReceived = (channel, message) => {
-        const current = selectedChannelRef.current;
-        if (current && channel.url === current.url) {
-          setMessages(prev => {
-            if (prev.some(m => m.messageId === message.messageId)) return prev;
-            return [...prev, message];
-          });
+        if (selectedChannelRef.current?.url === channel.url) {
+          setMessages(prev => prev.some(m => m.messageId === message.messageId)
+            ? prev : [...prev, message]);
           channel.markAsRead();
         } else {
-          setUnreadMap(prev => ({
-            ...prev,
-            [channel.url]: (prev[channel.url] || 0) + 1
-          }));
+          setUnreadMap(prev => ({ ...prev, [channel.url]: (prev[channel.url] || 0) + 1 }));
         }
         loadChannels(sb);
       };
 
-      // ✅ Detect when current user is added to a new channel (e.g. Desk channels via Platform API)
       handler.onUserJoined = (channel, user) => {
-        if (user.userId === id) {
-          console.log("📨 Added to new channel:", channel.url);
-          loadChannels(sb);
-        }
+        if (user.userId === id) loadChannels(sb);
       };
 
-      // ✅ Listen for channel updates
       handler.onChannelChanged = (channel) => {
-        const current = selectedChannelRef.current;
-        if (current && channel.url === current.url) {
-          setSelectedChannel(channel);
-        }
+        if (selectedChannelRef.current?.url === channel.url) setSelectedChannel(channel);
         loadChannels(sb);
       };
 
       handler.onTypingStatusUpdated = (channel) => {
-        if (selectedChannelRef.current?.url === channel.url) {
-          const typers = channel.getTypingUsers();
-          setTypingUsers(typers.map(u => u.userId));
-        }
+        if (selectedChannelRef.current?.url === channel.url)
+          setTypingUsers(channel.getTypingUsers().map(u => u.userId));
       };
 
       sb.groupChannel.addGroupChannelHandler("GLOBAL_HANDLER", handler);
     } catch (err) {
       console.error("Login failed:", err);
       localStorage.removeItem("sb_user_id");
-    localStorage.removeItem("sb_selected_channel"); // ✅ Clear selected channel on logout
+      localStorage.removeItem("sb_selected_channel");
     } finally {
       setIsConnecting(false);
       setIsAutoLogging(false);
     }
   };
 
-  // =========================
-  // LOGOUT
-  // =========================
+  // ── Logout ───────────────────────────────────────────────────────────
   const logout = async () => {
     if (sbRef.current) {
       sbRef.current.groupChannel.removeGroupChannelHandler("GLOBAL_HANDLER");
@@ -196,46 +155,31 @@ function App() {
     }
     localStorage.removeItem("sb_user_id");
     localStorage.removeItem("sb_selected_channel");
-    setIsLoggedIn(false);
-    setUserId("");
-    setInputUserId("");
-    setChannels([]);
-    setSelectedChannel(null);
-    setMessages([]);
-    setText("");
-    setUnreadMap({});
+    setIsLoggedIn(false); setUserId(""); setInputUserId("");
+    setChannels([]); setSelectedChannel(null);
+    setMessages([]); setText([]); setUnreadMap({});
   };
 
-  // =========================
-  // LOAD CHANNELS
-  // =========================
+  // ── Load channels ────────────────────────────────────────────────────
   const loadChannels = async (sb) => {
     const query = (sb || sbRef.current).groupChannel.createMyGroupChannelListQuery({
-      includeEmpty: true,
-      limit: 50, // ✅ Increased to include Desk channels
-      order: "latest_last_message",
+      includeEmpty: true, limit: 50, order: "latest_last_message",
     });
-    const channelList = await query.next();
-    setChannels(channelList);
-    return channelList; // ✅ Return for use in auto-restore
+    const list = await query.next();
+    setChannels(list);
+    return list;
   };
 
-  // =========================
-  // CREATE NEW TICKET
-  // =========================
+  // ── Create ticket ────────────────────────────────────────────────────
   const createNewTicket = async () => {
     const ch = await sbRef.current.groupChannel.createChannel({
-      invitedUserIds: [BOT_ID],
-      name: "New Support Ticket",
-      isDistinct: false,
+      invitedUserIds: [BOT_ID], name: "New Support Ticket", isDistinct: false,
     });
     setChannels(prev => [ch, ...prev]);
     selectChannel(ch);
   };
 
-  // =========================
-  // SELECT CHANNEL
-  // =========================
+  // ── Select channel ───────────────────────────────────────────────────
   const selectChannel = async (channel) => {
     setFaqContent(null);
     setSelectedChannel(channel);
@@ -244,15 +188,12 @@ function App() {
     if (isMobile) setShowSidebarOnMobile(false);
     setUnreadMap(prev => ({ ...prev, [channel.url]: 0 }));
     channel.markAsRead();
+
     const history = await channel.getMessagesByTimestamp(Date.now(), {
-      prevResultSize: 50,
-      nextResultSize: 0,
-      isInclusive: true,
+      prevResultSize: 50, nextResultSize: 0, isInclusive: true,
     });
     setMessages(history);
 
-    // Send a one-time welcome message with category buttons when the channel
-    // has no prior messages so the user always sees a helpful starting prompt.
     if (history.length === 0 && BACKEND_URL) {
       try {
         await fetch(`${BACKEND_URL}/welcome`, {
@@ -260,67 +201,42 @@ function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ channelUrl: channel.url, userId }),
         });
-      } catch (err) {
-        console.warn("Welcome call failed (non-fatal):", err);
-      }
+      } catch {}
     }
   };
 
-  // =========================
-  // DELETE CHANNEL
-  // =========================
+  // ── Delete channel ───────────────────────────────────────────────────
   const deleteChannel = async (e, channel) => {
     e.stopPropagation();
     try {
       await channel.delete();
       setChannels(prev => prev.filter(c => c.url !== channel.url));
-      if (selectedChannel?.url === channel.url) {
-        setSelectedChannel(null);
-        setMessages([]);
-      }
-    } catch (err) {
-      console.error("Delete failed:", err);
-    }
+      if (selectedChannel?.url === channel.url) { setSelectedChannel(null); setMessages([]); }
+    } catch (err) { console.error("Delete failed:", err); }
   };
 
-  // =========================
-  // SEND MESSAGE
-  // =========================
+  // ── Send message ─────────────────────────────────────────────────────
   const sendMessage = useCallback(() => {
     if (!text.trim() || !selectedChannel || isSending) return;
     const messageText = text;
     setText("");
     setIsSending(true);
 
-    const request = selectedChannel.sendUserMessage({ message: messageText });
-
-    request.onSucceeded(async (message) => {
-      setMessages(prev => {
-        if (prev.some(m => m.messageId === message.messageId)) return prev;
-        return [...prev, message];
-      });
+    const req = selectedChannel.sendUserMessage({ message: messageText });
+    req.onSucceeded(async (message) => {
+      setMessages(prev => prev.some(m => m.messageId === message.messageId)
+        ? prev : [...prev, message]);
       setIsSending(false);
-
       if (!selectedChannel.name || selectedChannel.name === "New Support Ticket") {
-        const newTitle = messageText.length > 30
-          ? messageText.substring(0, 30) + "..."
-          : messageText;
+        const newTitle = messageText.length > 30 ? messageText.slice(0, 30) + "..." : messageText;
         await selectedChannel.updateChannel({ name: newTitle });
         loadChannels();
       }
     });
-
-    request.onFailed((error) => {
-      console.error("Send failed:", error);
-      setIsSending(false);
-    });
+    req.onFailed((err) => { console.error("Send failed:", err); setIsSending(false); });
   }, [text, selectedChannel, isSending]);
 
-  // =========================
-  // ACTION BUTTON HANDLER
-  // Called when the user clicks one of the interactive buttons embedded in a
-  // bot message (Retry Payment / Talk to Human / View FAQ).
-  // =========================
+  // ── Action button handler ────────────────────────────────────────────
   const handleButtonAction = useCallback(async (action, meta = {}) => {
     if (action === "retry_payment") {
       try {
@@ -330,36 +246,15 @@ function App() {
           body: JSON.stringify({ txnId: meta.txnId, channelUrl: selectedChannel?.url, userId }),
         });
         const data = await res.json();
-        if (data.paymentUrl) {
-          // Navigate in the same tab so Stripe can redirect straight back to
-          // the chat — no new tab means no Sendbird reconnect and no logout.
-          window.location.href = data.paymentUrl;
-        } else {
-          alert(data.error || data.message || "Could not create payment link. Please try again.");
-        }
-      } catch (err) {
-        console.error("Retry payment failed:", err);
-        alert("Could not reach the payment service. Please try again.");
-      }
+        if (data.paymentUrl) window.location.href = data.paymentUrl;
+        else alert(data.error || data.message || "Could not create payment link.");
+      } catch { alert("Could not reach the payment service."); }
 
     } else if (action === "escalate") {
-      // Show optimistic messages immediately so the user gets instant feedback
-      // even if the backend takes a while to respond (e.g. Render cold start).
       const nowMs = Date.now();
-      const optUser = {
-        messageId: `opt_${nowMs}`,
-        sender: { userId },
-        message: "I need to speak to a human agent.",
-        createdAt: nowMs,
-      };
-      const optBot = {
-        messageId: `opt_${nowMs + 1}`,
-        sender: { userId: BOT_ID },
-        message: "Connecting you with a human agent... please wait while we create your support ticket.",
-        createdAt: nowMs + 1,
-      };
+      const optUser = { messageId: `opt_${nowMs}`,     sender: { userId }, message: "I need to speak to a human agent.", createdAt: nowMs };
+      const optBot  = { messageId: `opt_${nowMs + 1}`, sender: { userId: BOT_ID }, message: "Connecting you with a human agent… please wait.", createdAt: nowMs + 1 };
       setMessages(prev => [...prev, optUser, optBot]);
-
       try {
         const res = await fetch(`${BACKEND_URL}/escalate`, {
           method: "POST",
@@ -372,87 +267,45 @@ function App() {
           alert(data.error || "Could not connect to an agent. Please try again.");
           return;
         }
-        // Poll for the real bot message — Sendbird may miss the real-time event
-        // if the connection dropped during the Render cold-start delay.
         const ch = selectedChannel;
-        const pollAt = [3000, 7000, 15000];
-        pollAt.forEach(delay => {
-          setTimeout(async () => {
-            if (!ch) return;
-            const history = await ch.getMessagesByTimestamp(Date.now(), {
-              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
-            });
-            setMessages(history);
-          }, delay);
-        });
-      } catch (err) {
-        console.error("Escalation failed:", err);
+        [3000, 7000, 15000].forEach(delay => setTimeout(async () => {
+          if (!ch) return;
+          const history = await ch.getMessagesByTimestamp(Date.now(), { prevResultSize: 50, nextResultSize: 0, isInclusive: true });
+          setMessages(history);
+        }, delay));
+      } catch {
         setMessages(prev => prev.filter(m => m.messageId !== optUser.messageId && m.messageId !== optBot.messageId));
         alert("Could not reach support. Please try again.");
       }
 
-    } else if (
-      action === "refund_start" ||
-      action === "refund_reason" ||
-      action === "refund_accept_partial" ||
-      action === "refund_decline"
-    ) {
-      // ── Refund negotiation engine ──
-      // Show an optimistic loading message immediately so the user knows
-      // the click registered (matches the UX pattern of the escalate handler).
+    } else if (["refund_start","refund_reason","refund_accept_partial","refund_decline"].includes(action)) {
       const nowMs = Date.now();
-      const optLoadingMsg = {
-        messageId: `opt_refund_${nowMs}`,
-        sender: { userId: BOT_ID },
-        message: "Processing your request…",
-        createdAt: nowMs,
-      };
-      setMessages((prev) => [...prev, optLoadingMsg]);
-
+      const optMsg = { messageId: `opt_refund_${nowMs}`, sender: { userId: BOT_ID }, message: "Processing your request…", createdAt: nowMs };
+      setMessages(prev => [...prev, optMsg]);
       try {
         const res = await fetch(`${BACKEND_URL}/refund-action`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            channelUrl: selectedChannel?.url,
-            userId,
-            txnId: meta.txnId,
-            action,
-            reason: meta.reason,  // present only for refund_reason buttons
-          }),
+          body: JSON.stringify({ channelUrl: selectedChannel?.url, userId, txnId: meta.txnId, action, reason: meta.reason }),
         });
         if (!res.ok) {
-          // Remove loading message and show error
-          setMessages((prev) => prev.filter((m) => m.messageId !== optLoadingMsg.messageId));
+          setMessages(prev => prev.filter(m => m.messageId !== optMsg.messageId));
           const data = await res.json().catch(() => ({}));
-          alert(data.error || "Could not process refund action. Please try again.");
+          alert(data.error || "Could not process refund action.");
           return;
         }
-        // Poll at increasing intervals to catch cold-start delay on the backend.
-        // Each poll replaces the full messages list (including the opt placeholder).
         const ch = selectedChannel;
-        [2000, 5000, 10000, 15000].forEach((delay) => {
-          setTimeout(async () => {
-            if (!ch) return;
-            const history = await ch.getMessagesByTimestamp(Date.now(), {
-              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
-            });
-            setMessages(history);
-          }, delay);
-        });
-      } catch (err) {
-        console.error("Refund action failed:", err);
-        setMessages((prev) => prev.filter((m) => m.messageId !== optLoadingMsg.messageId));
+        [2000, 5000, 10000, 15000].forEach(delay => setTimeout(async () => {
+          if (!ch) return;
+          const history = await ch.getMessagesByTimestamp(Date.now(), { prevResultSize: 50, nextResultSize: 0, isInclusive: true });
+          setMessages(history);
+        }, delay));
+      } catch {
+        setMessages(prev => prev.filter(m => m.messageId !== optMsg.messageId));
         alert("Could not reach the service. Please try again.");
       }
 
-    } else if (
-      action === "check_transaction" ||
-      action === "ask_refund" ||
-      action === "ask_retry"
-    ) {
-      // All three welcome categories need a TXN selection first.
-      // Fetch the user's last 5 transactions and display them as buttons.
+    } else if (["check_transaction","ask_refund","ask_retry"].includes(action)) {
       try {
         await fetch(`${BACKEND_URL}/transaction-list`, {
           method: "POST",
@@ -460,30 +313,17 @@ function App() {
           body: JSON.stringify({ channelUrl: selectedChannel?.url, userId }),
         });
         const ch = selectedChannel;
-        [2000, 5000].forEach((delay) => {
-          setTimeout(async () => {
-            if (!ch) return;
-            const history = await ch.getMessagesByTimestamp(Date.now(), {
-              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
-            });
-            setMessages(history);
-          }, delay);
-        });
-      } catch (err) {
-        console.error("Transaction list failed:", err);
-      }
+        [2000, 5000].forEach(delay => setTimeout(async () => {
+          if (!ch) return;
+          const history = await ch.getMessagesByTimestamp(Date.now(), { prevResultSize: 50, nextResultSize: 0, isInclusive: true });
+          setMessages(history);
+        }, delay));
+      } catch { console.error("Transaction list failed"); }
 
     } else if (action === "view_transaction") {
-      // User tapped one of the listed transactions — show its status + relevant action buttons.
       const nowMs = Date.now();
-      const optLoading = {
-        messageId: `opt_view_${nowMs}`,
-        sender: { userId: BOT_ID },
-        message: "Looking up transaction details…",
-        createdAt: nowMs,
-      };
-      setMessages((prev) => [...prev, optLoading]);
-
+      const optMsg = { messageId: `opt_view_${nowMs}`, sender: { userId: BOT_ID }, message: "Looking up transaction details…", createdAt: nowMs };
+      setMessages(prev => [...prev, optMsg]);
       try {
         await fetch(`${BACKEND_URL}/view-transaction`, {
           method: "POST",
@@ -491,30 +331,17 @@ function App() {
           body: JSON.stringify({ channelUrl: selectedChannel?.url, userId, txnId: meta.txnId }),
         });
         const ch = selectedChannel;
-        [2000, 5000, 10000].forEach((delay) => {
-          setTimeout(async () => {
-            if (!ch) return;
-            const history = await ch.getMessagesByTimestamp(Date.now(), {
-              prevResultSize: 50, nextResultSize: 0, isInclusive: true,
-            });
-            setMessages(history);
-          }, delay);
-        });
-      } catch (err) {
-        console.error("View transaction failed:", err);
-        setMessages((prev) => prev.filter((m) => m.messageId !== optLoading.messageId));
-        alert("Could not fetch transaction details. Please try again.");
+        [2000, 5000, 10000].forEach(delay => setTimeout(async () => {
+          if (!ch) return;
+          const history = await ch.getMessagesByTimestamp(Date.now(), { prevResultSize: 50, nextResultSize: 0, isInclusive: true });
+          setMessages(history);
+        }, delay));
+      } catch {
+        setMessages(prev => prev.filter(m => m.messageId !== optMsg.messageId));
+        alert("Could not fetch transaction details.");
       }
 
     } else if (action === "faq") {
-      // Query the KB for payment failure FAQ, then show the answer inline
-      // below the chat — no new Sendbird message needed.
-      if (!BACKEND_URL) {
-        setFaqContent(
-          "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues. Contact support for help."
-        );
-        return;
-      }
       try {
         const res = await fetch(`${BACKEND_URL}/knowledge-base`, {
           method: "POST",
@@ -522,195 +349,233 @@ function App() {
           body: JSON.stringify({ query: "payment failed" }),
         });
         const data = await res.json();
-        setFaqContent(
-          data.found
-            ? data.answer
-            : "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues. Contact support for further assistance."
-        );
+        setFaqContent(data.found ? data.answer : "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues.");
       } catch {
-        setFaqContent(
-          "Common payment failure reasons: insufficient funds, card declined, expired card, or network issues."
-        );
+        setFaqContent("Common payment failure reasons: insufficient funds, card declined, expired card, or network issues.");
       }
     }
   }, [selectedChannel, userId]);
 
-  // =========================
-  // TYPING INDICATOR
-  // =========================
+  // ── Helpers ──────────────────────────────────────────────────────────
   const handleTyping = (e) => {
     setText(e.target.value);
     if (selectedChannel) selectedChannel.startTyping();
   };
 
-  // =========================
-  // AUTO SCROLL
-  // =========================
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  const formatTime = (ts) => ts
+    ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "";
 
-  // =========================
-  // FILTER CHANNELS
-  // =========================
+  const getStatusPill = (msg) => {
+    if (!msg) return null;
+    const l = msg.toLowerCase();
+    if (l.includes("escalat")) return { label: "Escalated", cls: "status-escalated" };
+    if (l.includes("success") || l.includes("refund"))  return { label: "Resolved",  cls: "status-resolved" };
+    if (l.includes("pending"))                           return { label: "Pending",   cls: "status-pending" };
+    return null;
+  };
+
   const filteredChannels = channels.filter(ch =>
     (ch.name || "Support Ticket").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // =========================
-  // GET STATUS BADGE
-  // =========================
-  const getStatusBadge = (msg) => {
-    if (!msg) return null;
-    const lower = msg.toLowerCase();
-    if (lower.includes("failed") || lower.includes("escalating")) return { label: "Escalated", color: "#e74c3c" };
-    if (lower.includes("success")) return { label: "Resolved", color: "#27ae60" };
-    if (lower.includes("pending")) return { label: "Pending", color: "#f39c12" };
-    return null;
-  };
+  // ── Reconnecting screen ───────────────────────────────────────────────
+  if (isAutoLogging) return (
+    <div className="reconnect-screen">
+      <div className="reconnect-logo">💼</div>
+      <div className="reconnect-text">Reconnecting to your session…</div>
+    </div>
+  );
 
-  // =========================
-  // FORMAT TIME
-  // =========================
-  const formatTime = (ts) => {
-    if (!ts) return "";
-    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
+  // ── Login / Landing page ─────────────────────────────────────────────
+  if (!isLoggedIn) return (
+    <div className="landing-root">
+      {/* ── LEFT: Brand panel ── */}
+      <div className="landing-left">
+        <div className="landing-orb landing-orb-1" />
+        <div className="landing-orb landing-orb-2" />
+        <div className="landing-orb landing-orb-3" />
 
-  // =========================
-  // RECONNECTING SCREEN
-  // =========================
-  if (isAutoLogging) {
-    return (
-      <div style={styles.loginWrapper}>
-        <div style={{ textAlign: "center", color: "#fff" }}>
-          <div style={{ fontSize: "40px", marginBottom: "16px" }}>💼</div>
-          <div style={{ fontSize: "16px" }}>Reconnecting...</div>
+        <div className="landing-brand">
+          <div className="landing-brand-icon">💼</div>
+          <div>
+            <div className="landing-brand-name">MySupp</div>
+            <div className="landing-brand-tag">Fintech Support Platform</div>
+          </div>
+        </div>
+
+        <h1 className="landing-headline">
+          Smart support<br />
+          <span>powered by AI</span>
+        </h1>
+        <p className="landing-sub">
+          Resolve refunds, track payments, and connect with agents — all in one intelligent support platform.
+        </p>
+
+        <div className="landing-features">
+          <div className="landing-feature">
+            <div className="landing-feature-icon purple">⚡</div>
+            <div className="landing-feature-text">
+              <strong>Instant Refund Processing</strong>
+              <span>AI-evaluated refunds processed in seconds</span>
+            </div>
+          </div>
+          <div className="landing-feature">
+            <div className="landing-feature-icon blue">🔍</div>
+            <div className="landing-feature-text">
+              <strong>Real-Time Transaction Tracking</strong>
+              <span>Monitor payments and status live</span>
+            </div>
+          </div>
+          <div className="landing-feature">
+            <div className="landing-feature-icon green">🧑‍💼</div>
+            <div className="landing-feature-text">
+              <strong>Human Agent Escalation</strong>
+              <span>Seamlessly connect to support agents</span>
+            </div>
+          </div>
+          <div className="landing-feature">
+            <div className="landing-feature-icon amber">🛡️</div>
+            <div className="landing-feature-text">
+              <strong>Fraud Detection</strong>
+              <span>Deterministic rules protect every transaction</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="landing-stats">
+          <div>
+            <div className="landing-stat-value">99.9%</div>
+            <div className="landing-stat-label">Uptime</div>
+          </div>
+          <div>
+            <div className="landing-stat-value">&lt; 2s</div>
+            <div className="landing-stat-label">Avg. Response</div>
+          </div>
+          <div>
+            <div className="landing-stat-value">24/7</div>
+            <div className="landing-stat-label">AI Support</div>
+          </div>
         </div>
       </div>
-    );
-  }
 
-  // =========================
-  // LOGIN SCREEN
-  // =========================
-  if (!isLoggedIn) {
-    return (
-      <div style={styles.loginWrapper}>
-        <div style={{
-          ...styles.loginCard,
-          width: isMobile ? "calc(100% - 48px)" : "380px",
-          padding: isMobile ? "32px 24px" : "48px 40px",
-        }}>
-          <div style={styles.logo}>💼</div>
-          <h2 style={{ margin: "0 0 6px", fontSize: "22px" }}>Support Portal</h2>
-          <p style={{ color: "#888", margin: "0 0 24px", fontSize: "14px" }}>Sign in to manage your support tickets</p>
-          <input
-            placeholder="Enter your user ID"
-            value={inputUserId}
-            onChange={(e) => { setInputUserId(e.target.value); setLoginError(""); }}
-            onKeyDown={(e) => e.key === "Enter" && login()}
-            style={styles.loginInput}
-          />
-          <button onClick={login} style={styles.loginButton} disabled={isConnecting}>
-            {isConnecting ? "Connecting..." : "Sign In"}
+      {/* ── RIGHT: Login form ── */}
+      <div className="landing-right">
+        <div className="login-card">
+          <h2 className="login-welcome">Welcome back 👋</h2>
+          <p className="login-welcome-sub">Sign in to manage your support tickets</p>
+
+          <label className="login-label">User ID</label>
+          <div className="login-input-wrap">
+            <span className="login-input-icon">🪪</span>
+            <input
+              className="login-input"
+              placeholder="e.g. raol1234"
+              value={inputUserId}
+              onChange={(e) => { setInputUserId(e.target.value); setLoginError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && login()}
+              autoComplete="username"
+              autoFocus
+            />
+          </div>
+
+          <div className="login-hint">
+            💡 Use any ID to sign in. New users are <strong>registered automatically</strong>.
+          </div>
+
+          <button className="login-btn" onClick={login} disabled={isConnecting || !inputUserId.trim()}>
+            {isConnecting ? (
+              <><span className="login-btn-spinner" />Connecting…</>
+            ) : "Sign In →"}
           </button>
+
           {loginError && (
-            <div style={{ marginTop: "12px", padding: "10px 14px", background: "#fff0f0", border: "1px solid #f5c6cb", borderRadius: "8px", color: "#c0392b", fontSize: "13px", textAlign: "left" }}>
-              {loginError}
+            <div className="login-error">
+              <span>⚠️</span> {loginError}
             </div>
           )}
+
+          <div className="login-trust">
+            <div className="login-trust-item">🔒 Secure</div>
+            <div className="login-trust-item">⚡ Instant</div>
+            <div className="login-trust-item">🆓 Free</div>
+          </div>
         </div>
       </div>
-    );
-  }
+    </div>
+  );
 
-  // =========================
-  // MAIN UI
-  // =========================
+  // ── Main App ──────────────────────────────────────────────────────────
   return (
-    <div style={styles.container}>
-      {/* SIDEBAR */}
-      <div style={{
-        ...styles.sidebar,
-        width: isMobile ? "100%" : "300px",
+    <div className="app-root">
+
+      {/* ── SIDEBAR ── */}
+      <div className="sidebar" style={{
         display: isMobile ? (showSidebarOnMobile ? "flex" : "none") : "flex",
+        flexDirection: "column",
+        width: isMobile ? "100%" : "300px",
       }}>
-        <div style={styles.userInfo}>
-          <div style={styles.avatar}>{userId[0]?.toUpperCase()}</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: "600", fontSize: "14px" }}>{userId}</div>
-            <div style={{ fontSize: "11px", color: "#27ae60" }}>● Online</div>
+        <div className="sidebar-header">
+          <div className="sidebar-brand">
+            <div className="sidebar-brand-icon">💼</div>
+            <div className="sidebar-brand-name">MySupp</div>
           </div>
-          <button onClick={logout} style={styles.logoutBtn} title="Logout">↩</button>
+          <div className="sidebar-user">
+            <div className="sidebar-avatar">{userId[0]?.toUpperCase()}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="sidebar-user-name">{userId}</div>
+              <div className="sidebar-user-status">Online</div>
+            </div>
+            <button className="sidebar-logout-btn" onClick={logout} title="Sign out">↩</button>
+          </div>
         </div>
 
-        <div style={styles.searchWrapper}>
+        <div className="sidebar-search">
           <input
-            placeholder="🔍 Search tickets..."
+            className="sidebar-search-input"
+            placeholder="Search tickets…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={styles.searchInput}
           />
         </div>
 
-        <button onClick={createNewTicket} style={styles.newButton}>
+        <button className="sidebar-new-btn" onClick={createNewTicket}>
           + New Support Ticket
         </button>
 
-        <div style={styles.channelList}>
+        <div className="sidebar-section-label">Your Tickets</div>
+
+        <div className="sidebar-channel-list">
           {filteredChannels.length === 0 && (
-            <div style={{ padding: "20px", textAlign: "center", color: "#aaa", fontSize: "13px" }}>
-              No tickets found
-            </div>
+            <div className="sidebar-empty">No tickets yet</div>
           )}
           {filteredChannels.map((ch) => {
-            const isSelected = selectedChannel?.url === ch.url;
-            const unread = unreadMap[ch.url] || 0;
-            const lastMsg = ch.lastMessage?.message || "";
-            const badge = getStatusBadge(lastMsg);
+            const isActive = selectedChannel?.url === ch.url;
+            const unread   = unreadMap[ch.url] || 0;
+            const lastMsg  = ch.lastMessage?.message || "";
+            const pill     = getStatusPill(lastMsg);
 
             return (
               <div
                 key={ch.url}
+                className={`channel-item ${isActive ? "active" : ""}`}
                 onClick={() => selectChannel(ch)}
-                style={{
-                  ...styles.channelItem,
-                  background: isSelected ? "#e8f0fe" : "transparent",
-                  borderLeft: isSelected ? "3px solid #1e2a38" : "3px solid transparent",
-                }}
               >
-                <div style={styles.channelIcon}>🎫</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontWeight: unread ? "700" : "500", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <div className="channel-icon">🎫</div>
+                <div className="channel-info">
+                  <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                    <span className="channel-name" style={{ fontWeight: unread ? 700 : 500 }}>
                       {ch.name || "Support Ticket"}
                     </span>
-                    <span style={{ fontSize: "10px", color: "#aaa", marginLeft: "4px", whiteSpace: "nowrap" }}>
-                      {formatTime(ch.lastMessage?.createdAt)}
-                    </span>
+                    {pill && <span className={`status-pill ${pill.cls}`}>{pill.label}</span>}
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
-                    {badge && (
-                      <span style={{ fontSize: "9px", background: badge.color, color: "#fff", padding: "1px 5px", borderRadius: "4px" }}>
-                        {badge.label}
-                      </span>
-                    )}
-                    <span style={{ fontSize: "11px", color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {lastMsg.substring(0, 35)}{lastMsg.length > 35 ? "..." : ""}
-                    </span>
-                  </div>
+                  <div className="channel-last-msg">{lastMsg.slice(0, 38)}{lastMsg.length > 38 ? "…" : ""}</div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", marginLeft: "4px" }}>
-                  {unread > 0 && (
-                    <span style={styles.unreadBadge}>{unread}</span>
-                  )}
+                <div className="channel-meta">
+                  <span className="channel-time">{formatTime(ch.lastMessage?.createdAt)}</span>
+                  {unread > 0 && <span className="channel-unread">{unread}</span>}
                   {!ch.url?.startsWith("sendbird_desk_") && (
-                    <span
-                      style={styles.deleteIcon}
-                      onClick={(e) => deleteChannel(e, ch)}
-                      title="Delete ticket"
-                    >🗑</span>
+                    <span className="channel-delete" onClick={(e) => deleteChannel(e, ch)} title="Delete">🗑</span>
                   )}
                 </div>
               </div>
@@ -719,225 +584,150 @@ function App() {
         </div>
       </div>
 
-      {/* CHAT WINDOW */}
-      <div style={{
-        ...styles.chatContainer,
+      {/* ── CHAT AREA ── */}
+      <div className="chat-container" style={{
         display: isMobile ? (showSidebarOnMobile ? "none" : "flex") : "flex",
       }}>
         {!selectedChannel ? (
-          <div style={styles.emptyState}>
-            <div style={{ fontSize: "48px" }}>💬</div>
-            <h3>Select a ticket to start chatting</h3>
-            <p style={{ color: "#aaa", fontSize: "14px" }}>Or create a new support ticket</p>
-            <button onClick={createNewTicket} style={{ ...styles.loginButton, marginTop: "16px", width: "auto", padding: "10px 24px" }}>
-              + New Ticket
-            </button>
+          <div className="empty-state">
+            <div className="empty-state-icon">💬</div>
+            <h3>No ticket selected</h3>
+            <p>Select a ticket from the sidebar or create a new one</p>
+            <button className="empty-state-btn" onClick={createNewTicket}>+ New Support Ticket</button>
           </div>
         ) : (
           <>
-            <div style={styles.chatHeader}>
+            {/* Header */}
+            <div className="chat-header">
               {isMobile && (
-                <button
-                  onClick={() => setShowSidebarOnMobile(true)}
-                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: "20px", padding: "0 8px 0 0", color: "#1e2a38" }}
-                  title="Back to tickets"
-                >←</button>
+                <button className="mobile-back" onClick={() => setShowSidebarOnMobile(true)}>←</button>
               )}
-              <div style={styles.channelIcon}>🎫</div>
+              <div className="chat-header-icon">🎫</div>
               <div>
-                <div style={{ fontWeight: "600" }}>{selectedChannel.name || "Support Ticket"}</div>
-                <div style={{ fontSize: "11px", color: "#aaa" }}>{selectedChannel.memberCount} members</div>
+                <div className="chat-header-name">{selectedChannel.name || "Support Ticket"}</div>
+                <div className="chat-header-meta">{selectedChannel.memberCount} members</div>
               </div>
             </div>
 
-            {/* Payment redirect notice — shown after Stripe redirects back */}
+            {/* Payment notice */}
             {paymentNotice && (
-              <div style={{
-                padding: "10px 16px",
-                background: paymentNotice.type === "success" ? "#e8f8e8" : "#fff8e8",
-                borderBottom: `1px solid ${paymentNotice.type === "success" ? "#a8dca8" : "#ffd08a"}`,
-                fontSize: "13px",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}>
-                <span style={{ color: paymentNotice.type === "success" ? "#27ae60" : "#e67e22", fontWeight: "500" }}>
+              <div className={`payment-notice ${paymentNotice.type === "success" ? "success" : "cancelled"}`}>
+                <span>
                   {paymentNotice.type === "success"
-                    ? `Payment for ${paymentNotice.txnId} was successful!`
-                    : `Payment for ${paymentNotice.txnId} was cancelled. You can retry below.`}
+                    ? `✅ Payment for ${paymentNotice.txnId} was successful!`
+                    : `⚠️ Payment for ${paymentNotice.txnId} was cancelled. You can retry below.`}
                 </span>
-                <button onClick={() => setPaymentNotice(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>
+                <button className="payment-notice-close" onClick={() => setPaymentNotice(null)}>×</button>
               </div>
             )}
 
-            <div style={styles.chatArea}>
+            {/* Messages */}
+            <div className="chat-area">
               {messages.map((msg) => {
                 if (!msg.message) return null;
-                const isUser = msg.sender?.userId === userId;
-                const isBot = msg.sender?.userId === BOT_ID;
+                const isUser  = msg.sender?.userId === userId;
+                const isBot   = msg.sender?.userId === BOT_ID;
+                const rowCls  = isUser ? "user" : isBot ? "bot" : "agent";
+
+                // Parse message.data for rich UI elements
+                let msgData = null;
+                if (!isUser && msg.data) {
+                  try { msgData = JSON.parse(msg.data); } catch {}
+                }
 
                 return (
-                  <div
-                    key={msg.messageId}
-                    style={{
-                      display: "flex",
-                      justifyContent: isUser ? "flex-end" : "flex-start",
-                      marginBottom: "12px",
-                      alignItems: "flex-end",
-                      gap: "8px",
-                    }}
-                  >
+                  <div key={msg.messageId} className={`msg-row ${rowCls}`} style={{ marginBottom: "10px" }}>
                     {!isUser && (
-                      <div style={{ ...styles.avatar, width: "28px", height: "28px", fontSize: "12px", flexShrink: 0 }}>
+                      <div className="msg-avatar" style={{ background: isBot ? "linear-gradient(135deg,#6366f1,#8b5cf6)" : "linear-gradient(135deg,#0f172a,#1e293b)" }}>
                         {isBot ? "🤖" : msg.sender?.userId?.[0]?.toUpperCase()}
                       </div>
                     )}
-                    <div style={{ maxWidth: isMobile ? "85%" : "65%" }}>
+                    <div className="msg-body" style={{ maxWidth: isMobile ? "85%" : "65%" }}>
                       {!isUser && (
-                        <div style={{ fontSize: "10px", color: "#aaa", marginBottom: "3px", paddingLeft: "4px" }}>
-                          {isBot ? "Support Bot" : msg.sender?.userId}
+                        <div className="msg-sender">{isBot ? "Support Bot" : msg.sender?.userId}</div>
+                      )}
+                      <div className={`msg-bubble ${rowCls}`}>{msg.message}</div>
+
+                      {/* ── Rich data rendering ── */}
+                      {msgData?.type === "action_buttons" && msgData.buttons?.length > 0 && (
+                        <div className="action-btns">
+                          {msgData.buttons.map((btn) => (
+                            <button
+                              key={btn.action + (btn.reason || "")}
+                              className={`action-btn ${btn.reason === "fraud" ? "danger" : ""}`}
+                              onClick={() => handleButtonAction(btn.action, {
+                                txnId: btn.txnId || msgData.txnId,
+                                reason: btn.reason,
+                              })}
+                            >
+                              {btn.label}
+                            </button>
+                          ))}
                         </div>
                       )}
-                      <div style={{
-                        background: isUser ? "#1e2a38" : isBot ? "#f0f4ff" : "#e9eef3",
-                        color: isUser ? "#fff" : "#000",
-                        padding: "10px 14px",
-                        borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                        fontSize: "14px",
-                        lineHeight: "1.4",
-                        border: isBot ? "1px solid #d0dcff" : "none",
-                      }}>
-                        {msg.message}
-                      </div>
-                      {/* ── Rich data rendering ──────────────────────────────
-                          Handles three payload types that the backend embeds in
-                          message.data (a JSON string):
-                          • action_buttons  → interactive button row
-                          • priority_badge  → HIGH / NORMAL priority chip
-                          • refund_status   → refund outcome badge            */}
-                      {!isUser && (() => {
-                        if (!msg.data) return null;
-                        let msgData = null;
-                        try { msgData = JSON.parse(msg.data); } catch { return null; }
 
-                        // ── action_buttons ───────────────────────────────────
-                        if (msgData?.type === "action_buttons" && msgData.buttons?.length) {
-                          return (
-                            <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
-                              {msgData.buttons.map((btn) => (
-                                <button
-                                  key={btn.action + (btn.reason || "")}
-                                  onClick={() => handleButtonAction(btn.action, {
-                                    txnId: btn.txnId || msgData.txnId,
-                                    reason: btn.reason,
-                                  })}
-                                  style={{
-                                    padding: "6px 14px",
-                                    borderRadius: "16px",
-                                    border: `1px solid ${btn.reason === "fraud" ? "#e74c3c" : "#1e2a38"}`,
-                                    background: btn.reason === "fraud" ? "#fff5f5" : "#fff",
-                                    color: btn.reason === "fraud" ? "#e74c3c" : "#1e2a38",
-                                    fontSize: "12px", cursor: "pointer", fontWeight: "500",
-                                  }}
-                                >
-                                  {btn.label}
-                                </button>
-                              ))}
-                            </div>
-                          );
-                        }
+                      {msgData?.type === "priority_badge" && (
+                        <div className={`priority-badge ${msgData.priority === "HIGH" ? "high" : "escalated"}`}>
+                          {msgData.priority === "HIGH" ? "🚨 HIGH PRIORITY" : "⚠️ ESCALATED"}
+                        </div>
+                      )}
 
-                        // ── priority_badge ───────────────────────────────────
-                        if (msgData?.type === "priority_badge") {
-                          const isHigh = msgData.priority === "HIGH";
-                          return (
-                            <div style={{ marginTop: "8px" }}>
-                              <span style={{
-                                display: "inline-flex", alignItems: "center", gap: "4px",
-                                padding: "3px 10px", borderRadius: "12px", fontSize: "11px",
-                                fontWeight: "700", letterSpacing: "0.3px",
-                                background: isHigh ? "#fdecea" : "#fff8e1",
-                                color: isHigh ? "#c0392b" : "#e67e22",
-                                border: `1px solid ${isHigh ? "#f5c6cb" : "#ffd08a"}`,
-                              }}>
-                                {isHigh ? "🚨 HIGH PRIORITY" : "⚠️ ESCALATED"}
-                              </span>
-                            </div>
-                          );
-                        }
-
-                        // ── refund_status ────────────────────────────────────
-                        if (msgData?.type === "refund_status") {
-                          const statusConfig = {
-                            refunded:      { label: "✅ Refund Processed",  bg: "#e8f8e8", color: "#27ae60", border: "#a8dca8" },
-                            coupon_issued: { label: "🎟 Coupon Issued",      bg: "#f0f4ff", color: "#2980b9", border: "#d0dcff" },
-                          };
-                          const cfg = statusConfig[msgData.status];
-                          if (!cfg) return null;
-                          return (
-                            <div style={{ marginTop: "8px" }}>
-                              <span style={{
-                                display: "inline-flex", alignItems: "center", gap: "4px",
-                                padding: "3px 10px", borderRadius: "12px", fontSize: "11px",
-                                fontWeight: "700", background: cfg.bg, color: cfg.color,
-                                border: `1px solid ${cfg.border}`,
-                              }}>
-                                {cfg.label}
-                                {msgData.amount ? ` · $${Number(msgData.amount).toFixed(2)}` : ""}
-                                {msgData.couponCode ? ` · ${msgData.couponCode}` : ""}
-                              </span>
-                            </div>
-                          );
-                        }
-
-                        return null;
+                      {msgData?.type === "refund_status" && (() => {
+                        const map = {
+                          refunded:      { cls: "refunded", label: `✅ Refund Processed${msgData.amount ? ` · $${Number(msgData.amount).toFixed(2)}` : ""}` },
+                          coupon_issued: { cls: "coupon",   label: `🎟 Coupon Issued${msgData.couponCode ? ` · ${msgData.couponCode}` : ""}` },
+                        };
+                        const cfg = map[msgData.status];
+                        return cfg ? <div className={`refund-badge ${cfg.cls}`}>{cfg.label}</div> : null;
                       })()}
-                      <div style={{ fontSize: "10px", color: "#bbb", marginTop: "3px", textAlign: isUser ? "right" : "left", paddingLeft: "4px" }}>
-                        {formatTime(msg.createdAt)}
-                      </div>
+
+                      <div className="msg-time">{formatTime(msg.createdAt)}</div>
                     </div>
                   </div>
                 );
               })}
 
               {typingUsers.length > 0 && (
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                  <div style={{ ...styles.avatar, width: "28px", height: "28px", fontSize: "12px" }}>🤖</div>
-                  <div style={{ background: "#f0f4ff", padding: "10px 14px", borderRadius: "18px 18px 18px 4px", border: "1px solid #d0dcff" }}>
-                    <span style={styles.typingDot} />
-                    <span style={{ ...styles.typingDot, animationDelay: "0.2s" }} />
-                    <span style={{ ...styles.typingDot, animationDelay: "0.4s" }} />
+                <div className="typing-row">
+                  <div className="msg-avatar">🤖</div>
+                  <div className="typing-bubble">
+                    <div className="typing-dot" />
+                    <div className="typing-dot" />
+                    <div className="typing-dot" />
                   </div>
                 </div>
               )}
+
               <div ref={bottomRef} />
             </div>
 
-            {/* Inline FAQ panel — shown when user clicks "View FAQ" button */}
+            {/* FAQ panel */}
             {faqContent && (
-              <div style={{ padding: "12px 16px", background: "#f0f4ff", borderTop: "1px solid #d0dcff", fontSize: "13px", color: "#333" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "6px" }}>
-                  <strong style={{ fontSize: "11px", color: "#555", textTransform: "uppercase", letterSpacing: "0.5px" }}>FAQ</strong>
-                  <button onClick={() => setFaqContent(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: "18px", lineHeight: 1, padding: 0 }}>×</button>
+              <div className="faq-panel">
+                <div className="faq-panel-header">
+                  <span className="faq-panel-label">📖 FAQ</span>
+                  <button className="faq-close" onClick={() => setFaqContent(null)}>×</button>
                 </div>
-                <div style={{ lineHeight: "1.6" }}>{faqContent}</div>
+                <div className="faq-body">{faqContent}</div>
               </div>
             )}
 
-            <div style={styles.inputArea}>
+            {/* Input */}
+            <div className="input-area">
               <input
-                style={styles.messageInput}
+                className="message-input"
                 value={text}
                 onChange={handleTyping}
-                placeholder="Type your message or transaction ID (e.g. TXN1001)..."
+                placeholder="Type a message or transaction ID (e.g. TXN1001)…"
                 onKeyDown={(e) => e.key === "Enter" && sendMessage()}
               />
               <button
-                style={{ ...styles.sendButton, opacity: isSending || !text.trim() ? 0.5 : 1 }}
+                className="send-btn"
                 onClick={sendMessage}
                 disabled={isSending || !text.trim()}
+                title="Send"
               >
-                {isSending ? "..." : "➤"}
+                {isSending ? "…" : "➤"}
               </button>
             </div>
           </>
@@ -946,34 +736,5 @@ function App() {
     </div>
   );
 }
-
-const styles = {
-  container: { display: "flex", height: "100vh", fontFamily: "'Inter', Arial, sans-serif", background: "#f4f6f8" },
-  sidebar: { width: "300px", borderRight: "1px solid #e0e4e8", display: "flex", flexDirection: "column", background: "#fff" },
-  userInfo: { display: "flex", alignItems: "center", gap: "10px", padding: "16px", borderBottom: "1px solid #f0f0f0" },
-  avatar: { width: "36px", height: "36px", borderRadius: "50%", background: "#1e2a38", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: "bold", fontSize: "14px", flexShrink: 0 },
-  logoutBtn: { background: "none", border: "1px solid #ddd", borderRadius: "6px", padding: "4px 8px", cursor: "pointer", fontSize: "14px" },
-  searchWrapper: { padding: "10px 12px" },
-  searchInput: { width: "100%", padding: "8px 12px", borderRadius: "20px", border: "1px solid #e0e4e8", fontSize: "13px", background: "#f8f9fb", boxSizing: "border-box" },
-  newButton: { margin: "0 12px 10px", padding: "10px", borderRadius: "8px", border: "none", background: "#1e2a38", color: "#fff", cursor: "pointer", fontWeight: "600", fontSize: "13px" },
-  channelList: { flex: 1, overflowY: "auto" },
-  channelItem: { display: "flex", alignItems: "center", padding: "10px 12px", cursor: "pointer", gap: "8px", transition: "background 0.15s" },
-  channelIcon: { fontSize: "16px", flexShrink: 0 },
-  unreadBadge: { background: "#e74c3c", color: "#fff", borderRadius: "10px", padding: "1px 6px", fontSize: "10px", fontWeight: "bold" },
-  deleteIcon: { cursor: "pointer", fontSize: "13px", opacity: 0.5 },
-  chatContainer: { flex: 1, display: "flex", flexDirection: "column" },
-  emptyState: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#555" },
-  chatHeader: { padding: "14px 20px", borderBottom: "1px solid #e0e4e8", display: "flex", alignItems: "center", gap: "10px", background: "#fff" },
-  chatArea: { flex: 1, padding: "20px", overflowY: "auto", background: "#f4f6f8" },
-  inputArea: { display: "flex", padding: "12px 16px", borderTop: "1px solid #e0e4e8", background: "#fff", gap: "8px", alignItems: "center" },
-  messageInput: { flex: 1, padding: "10px 16px", borderRadius: "24px", border: "1px solid #e0e4e8", fontSize: "14px", outline: "none" },
-  sendButton: { width: "40px", height: "40px", borderRadius: "50%", border: "none", background: "#1e2a38", color: "#fff", cursor: "pointer", fontSize: "16px", display: "flex", alignItems: "center", justifyContent: "center" },
-  typingDot: { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#888", margin: "0 2px", animation: "bounce 0.8s infinite" },
-  loginWrapper: { height: "100vh", display: "flex", justifyContent: "center", alignItems: "center", background: "linear-gradient(135deg, #1e2a38 0%, #2c3e50 100%)" },
-  loginCard: { width: "380px", padding: "48px 40px", background: "white", borderRadius: "16px", boxShadow: "0 20px 60px rgba(0,0,0,0.2)", textAlign: "center" },
-  logo: { fontSize: "40px", marginBottom: "16px" },
-  loginInput: { width: "100%", padding: "12px 16px", borderRadius: "8px", border: "1px solid #e0e4e8", fontSize: "14px", marginBottom: "16px", boxSizing: "border-box" },
-  loginButton: { width: "100%", padding: "12px", borderRadius: "8px", border: "none", background: "#1e2a38", color: "white", fontSize: "15px", fontWeight: "600", cursor: "pointer" },
-};
 
 export default App;
