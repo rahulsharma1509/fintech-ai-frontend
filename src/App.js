@@ -2,10 +2,24 @@ import "./App.css";
 import { useEffect, useState, useRef, useCallback } from "react";
 import SendbirdChat from "@sendbird/chat";
 import { GroupChannelModule, GroupChannelHandler } from "@sendbird/chat/groupChannel";
+import { initializeApp, getApps } from "firebase/app";
+import { getMessaging, getToken, onMessage } from "firebase/messaging";
 
 const APP_ID      = process.env.REACT_APP_SENDBIRD_APP_ID;
 const BOT_ID      = process.env.REACT_APP_BOT_ID || "support_bot";
 const BACKEND_URL = "https://fintech-ai-backend-r8ap.onrender.com";
+
+// Firebase web config — set these in .env as REACT_APP_FIREBASE_*
+// If not set, push notifications are silently disabled.
+const FIREBASE_CONFIG = {
+  apiKey:            process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain:        process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId:         process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket:     process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             process.env.REACT_APP_FIREBASE_APP_ID,
+};
+const FIREBASE_VAPID_KEY = process.env.REACT_APP_FIREBASE_VAPID_KEY;
 
 function App() {
   const [userId, setUserId]                     = useState("");
@@ -26,6 +40,7 @@ function App() {
   const [paymentNotice, setPaymentNotice]       = useState(null);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
   const [showSidebarOnMobile, setShowSidebarOnMobile] = useState(true);
+  const [isCreatingTicket, setIsCreatingTicket] = useState(false);
 
   const sbRef                 = useRef(null);
   const selectedChannelRef    = useRef(null);
@@ -67,6 +82,55 @@ function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // ── FCM push notifications ───────────────────────────────────────────
+  // Runs once after login. Requests browser notification permission,
+  // gets the FCM registration token, and registers it with the backend.
+  // No-ops silently if Firebase env vars are not configured.
+  useEffect(() => {
+    if (!isLoggedIn || !userId) return;
+    if (!FIREBASE_CONFIG.apiKey) return; // Firebase not configured — skip
+    (async () => {
+      try {
+        if (!("Notification" in window)) return; // browser doesn't support notifications
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") return;
+
+        // Register service worker for background messages
+        if ("serviceWorker" in navigator) {
+          const reg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+          // Send Firebase config to the SW (it can't read env vars)
+          if (reg.active) {
+            reg.active.postMessage({ type: "FIREBASE_CONFIG", config: FIREBASE_CONFIG });
+          }
+        }
+
+        const app       = getApps().length === 0 ? initializeApp(FIREBASE_CONFIG) : getApps()[0];
+        const messaging = getMessaging(app);
+
+        const token = await getToken(messaging, { vapidKey: FIREBASE_VAPID_KEY }).catch(() => null);
+        if (token) {
+          await fetch(`${BACKEND_URL}/register-push-token`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId, fcmToken: token }),
+          }).catch(() => {}); // non-fatal
+        }
+
+        // Show foreground notifications as a subtle toast in the page title
+        onMessage(messaging, (payload) => {
+          const title = payload.notification?.title || "MySupp";
+          const body  = payload.notification?.body  || "";
+          document.title = `🔔 ${title} — MySupp`;
+          setTimeout(() => { document.title = "MySupp"; }, 6000);
+          console.log("[FCM] Foreground message:", title, body);
+        });
+      } catch (err) {
+        console.warn("[FCM] Push setup failed:", err.message);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn, userId]);
 
   // ── Login ────────────────────────────────────────────────────────────
   const login = async () => {
@@ -119,7 +183,8 @@ function App() {
         } else {
           setUnreadMap(prev => ({ ...prev, [channel.url]: (prev[channel.url] || 0) + 1 }));
         }
-        loadChannels(sb);
+        // Move this channel to the top immediately — no round-trip needed
+        setChannels(prev => [channel, ...prev.filter(c => c.url !== channel.url)]);
       };
 
       handler.onUserJoined = (channel, user) => {
@@ -128,7 +193,8 @@ function App() {
 
       handler.onChannelChanged = (channel) => {
         if (selectedChannelRef.current?.url === channel.url) setSelectedChannel(channel);
-        loadChannels(sb);
+        // Move updated channel (e.g. agent replied) to top immediately
+        setChannels(prev => [channel, ...prev.filter(c => c.url !== channel.url)]);
       };
 
       handler.onTypingStatusUpdated = (channel) => {
@@ -172,11 +238,20 @@ function App() {
 
   // ── Create ticket ────────────────────────────────────────────────────
   const createNewTicket = async () => {
-    const ch = await sbRef.current.groupChannel.createChannel({
-      invitedUserIds: [BOT_ID], name: "New Support Ticket", isDistinct: false,
-    });
-    setChannels(prev => [ch, ...prev]);
-    selectChannel(ch);
+    if (isCreatingTicket) return;
+    setIsCreatingTicket(true);
+    try {
+      const ch = await sbRef.current.groupChannel.createChannel({
+        invitedUserIds: [BOT_ID], name: "New Support Ticket", isDistinct: false,
+      });
+      setChannels(prev => [ch, ...prev.filter(c => c.url !== ch.url)]);
+      await selectChannel(ch);
+    } catch (err) {
+      console.error("Create ticket failed:", err);
+      alert("Could not create a new ticket. Please check your connection and try again.");
+    } finally {
+      setIsCreatingTicket(false);
+    }
   };
 
   // ── Select channel ───────────────────────────────────────────────────
@@ -539,8 +614,8 @@ function App() {
           />
         </div>
 
-        <button className="sidebar-new-btn" onClick={createNewTicket}>
-          + New Support Ticket
+        <button className="sidebar-new-btn" onClick={createNewTicket} disabled={isCreatingTicket}>
+          {isCreatingTicket ? "Creating…" : "+ New Support Ticket"}
         </button>
 
         <div className="sidebar-section-label">Your Tickets</div>
@@ -593,7 +668,9 @@ function App() {
             <div className="empty-state-icon">💬</div>
             <h3>No ticket selected</h3>
             <p>Select a ticket from the sidebar or create a new one</p>
-            <button className="empty-state-btn" onClick={createNewTicket}>+ New Support Ticket</button>
+            <button className="empty-state-btn" onClick={createNewTicket} disabled={isCreatingTicket}>
+              {isCreatingTicket ? "Creating…" : "+ New Support Ticket"}
+            </button>
           </div>
         ) : (
           <>
