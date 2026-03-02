@@ -166,13 +166,7 @@ function App() {
       setUserId(id);
       setIsLoggedIn(true);
 
-      const loadedChannels = await loadChannels(sb);
-      const savedUrl = localStorage.getItem("sb_selected_channel");
-      if (savedUrl && loadedChannels) {
-        const restored = loadedChannels.find(c => c.url === savedUrl);
-        if (restored) await selectChannel(restored);
-      }
-
+      // ── Register handler FIRST so no messages are missed during channel restore ──
       const handler = new GroupChannelHandler();
 
       handler.onMessageReceived = (channel, message) => {
@@ -203,6 +197,13 @@ function App() {
       };
 
       sb.groupChannel.addGroupChannelHandler("GLOBAL_HANDLER", handler);
+
+      const loadedChannels = await loadChannels(sb);
+      const savedUrl = localStorage.getItem("sb_selected_channel");
+      if (savedUrl && loadedChannels) {
+        const restored = loadedChannels.find(c => c.url === savedUrl);
+        if (restored) await selectChannel(restored, id);
+      }
     } catch (err) {
       console.error("Login failed:", err);
       localStorage.removeItem("sb_user_id");
@@ -255,8 +256,14 @@ function App() {
   };
 
   // ── Select channel ───────────────────────────────────────────────────
-  const selectChannel = async (channel) => {
+  // userIdOverride is used during login before React userId state settles
+  const selectChannel = async (channel, userIdOverride) => {
+    const effectiveUserId = userIdOverride || userId;
+
     setFaqContent(null);
+    // Update the ref synchronously so onMessageReceived can find the right
+    // channel before React commits the state update.
+    selectedChannelRef.current = channel;
     setSelectedChannel(channel);
     localStorage.setItem("sb_selected_channel", channel.url);
     setTypingUsers([]);
@@ -264,19 +271,35 @@ function App() {
     setUnreadMap(prev => ({ ...prev, [channel.url]: 0 }));
     channel.markAsRead();
 
-    const history = await channel.getMessagesByTimestamp(Date.now(), {
-      prevResultSize: 50, nextResultSize: 0, isInclusive: true,
-    });
-    setMessages(history);
+    try {
+      const history = await channel.getMessagesByTimestamp(Date.now(), {
+        prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+      });
+      setMessages(history);
 
-    if (history.length === 0 && BACKEND_URL) {
-      try {
-        await fetch(`${BACKEND_URL}/welcome`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channelUrl: channel.url, userId }),
-        });
-      } catch {}
+      if (history.length === 0 && BACKEND_URL) {
+        try {
+          await fetch(`${BACKEND_URL}/welcome`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channelUrl: channel.url, userId: effectiveUserId }),
+          });
+          // Re-fetch after a short delay to catch the bot welcome message
+          // in case onMessageReceived fires before the ref is committed
+          setTimeout(async () => {
+            if (selectedChannelRef.current?.url !== channel.url) return;
+            try {
+              const fresh = await channel.getMessagesByTimestamp(Date.now(), {
+                prevResultSize: 50, nextResultSize: 0, isInclusive: true,
+              });
+              if (fresh.length > 0) setMessages(fresh);
+            } catch {}
+          }, 2000);
+        } catch {}
+      }
+    } catch (err) {
+      console.error("Load messages failed:", err);
+      setMessages([]);
     }
   };
 
